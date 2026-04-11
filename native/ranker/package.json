@@ -1,0 +1,22 @@
+{
+  "name": "@pikly/ranker",
+  "version": "4.0.0",
+  "description": "C++ native N-API ranking addon with TypeScript fallback",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "node-gyp configure && node-gyp build",
+    "build:release": "node-gyp configure --release && node-gyp build --release",
+    "clean": "node-gyp clean",
+    "test": "ts-node test/ranker.test.ts"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2",
+    "@types/node": "^20.11.5"
+  },
+  "gypfile": true
+}

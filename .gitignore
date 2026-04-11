@@ -1,0 +1,56 @@
+# ── Node ─────────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+.npm/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+pipeline/.pytest_cache/
+pipeline/quarantine/
+
+# ── Environment (never commit secrets) ───────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.env
+# Keep .env.example committed
+!.env.example
+
+# ── Data files (too large for git) ───────────────────────────────────────────
+api/data/products_cleaned.jsonl
+api/data/products_discovery_enhanced.jsonl
+*.jsonl
+*.csv
+
+# ── Build artefacts ───────────────────────────────────────────────────────────
+coverage/
+*.tsbuildinfo
+.turbo/
+
+# ── Native addon build ────────────────────────────────────────────────────────
+native/ranker/build/
+native/ranker/node_modules/
+*.node
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.iml
+
+# ── Uploads ───────────────────────────────────────────────────────────────────
+public/uploads/

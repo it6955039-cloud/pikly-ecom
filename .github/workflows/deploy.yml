@@ -1,0 +1,230 @@
+# .github/workflows/deploy.yml
+# Pikly Enterprise — CI/CD Pipeline
+#
+# Triggers:
+#   push to main    → test + deploy API to Railway
+#   push to main    → deploy Go proxy to Fly.io
+#   manual trigger  → run Python ETL pipeline (seed DB)
+#
+# Required GitHub Secrets:
+#   RAILWAY_TOKEN       Railway API token (from railway.app dashboard)
+#   FLY_API_TOKEN       Fly.io API token  (fly auth token)
+#   DATABASE_URL        Neon PostgreSQL connection string
+#   ALGOLIA_APP_ID      Algolia app ID
+#   ALGOLIA_WRITE_KEY   Algolia write key
+#   ALGOLIA_INDEX       Algolia index name (default: products)
+
+name: CI / CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_etl:
+        description: 'Run Python ETL pipeline to seed database?'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+
+  # ── 1. Test NestJS API ───────────────────────────────────────────────────────
+  test-api:
+    name: Test API (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint || true      # don't fail CI on lint warnings
+
+      - name: Unit tests
+        run: npm test -- --passWithNoTests
+        env:
+          DATABASE_URL:       postgresql://test:test@localhost:5432/test
+          REDIS_URL:          redis://localhost:6379
+          JWT_SECRET:         ci-test-secret-not-real-minimum-32-chars-long
+          JWT_REFRESH_SECRET: ci-test-refresh-secret-different-from-above
+
+  # ── 2. Test Python pipeline ──────────────────────────────────────────────────
+  test-pipeline:
+    name: Test Pipeline (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pipeline
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate schema models
+        run: |
+          python -c "
+          from validate import EnrichedProduct, Flags, Taxonomy
+          import json
+          # Test with the sample record from the docs
+          sample = {
+            'asin': 'B001A2VBUU',
+            'source': 'oxylabs',
+            'data': {
+              'product_results': {'title': 'Test', 'brand': 'TestBrand',
+                'extracted_price': 21.99, 'rating': 3.5, 'reviews': 1820},
+            },
+            '_taxonomy': {'department': 'Fashion', 'subcategory': 'Overalls'},
+            '_dummy_fields': [],
+            '_flags': {'isPrime': True, 'inStock': True, 'isOnSale': True}
+          }
+          p = EnrichedProduct.model_validate(sample)
+          assert p.asin == 'B001A2VBUU'
+          assert p.flags.isPrime == True
+          print('✅ Pydantic validation OK')
+          "
+
+      - name: Test transform
+        run: |
+          python -c "
+          from validate import EnrichedProduct
+          from transform import to_db_row, slugify, compute_discount
+          assert slugify('Hello World!') == 'hello-world'
+          assert compute_discount(21.99, 25.70) == 14
+          print('✅ Transform functions OK')
+          "
+
+  # ── 3. Build Go proxy ────────────────────────────────────────────────────────
+  build-proxy:
+    name: Build Go Cache-Proxy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/cache-proxy
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: services/cache-proxy/go.sum
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o /tmp/cache-proxy ./cmd/server
+
+      - name: Verify binary
+        run: /tmp/cache-proxy --help 2>/dev/null || true
+
+  # ── 4. Deploy API to Railway ─────────────────────────────────────────────────
+  deploy-api:
+    name: Deploy API → Railway
+    needs: [test-api, test-pipeline]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy API
+        working-directory: api
+        run: railway up --service pikly-api --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  # ── 5. Deploy Go proxy to Fly.io ─────────────────────────────────────────────
+  deploy-proxy:
+    name: Deploy Proxy → Fly.io
+    needs: [build-proxy]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        working-directory: services/cache-proxy
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  # ── 6. Run ETL pipeline (manual trigger only) ─────────────────────────────────
+  run-etl:
+    name: Run Python ETL (manual)
+    runs-on: ubuntu-latest
+    if: github.event.inputs.run_etl == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pipeline deps
+        working-directory: pipeline
+        run: pip install -r requirements.txt
+
+      - name: Download products_cleaned.jsonl
+        run: |
+          echo "Place your products_cleaned.jsonl in GitHub Actions cache"
+          echo "or download from your storage bucket here."
+          # Example if stored in a private release:
+          # gh release download v1.0.0 --pattern "products_cleaned.jsonl" --dir data/
+          echo "Skipping — no file configured. Add download step."
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Run ingest
+        working-directory: pipeline
+        run: |
+          if [ -f "../data/products_cleaned.jsonl" ]; then
+            python ingest.py ../data/products_cleaned.jsonl --batch 300
+          else
+            echo "⚠️  products_cleaned.jsonl not found — skipping ETL"
+          fi
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Sync Algolia
+        working-directory: api
+        run: |
+          npm ci --ignore-scripts
+          npx ts-node scripts/sync-algolia-pg.ts
+        env:
+          DATABASE_URL:        ${{ secrets.DATABASE_URL }}
+          ALGOLIA_APP_ID:      ${{ secrets.ALGOLIA_APP_ID }}
+          ALGOLIA_WRITE_KEY:   ${{ secrets.ALGOLIA_WRITE_KEY }}
+          ALGOLIA_INDEX:       ${{ secrets.ALGOLIA_INDEX }}

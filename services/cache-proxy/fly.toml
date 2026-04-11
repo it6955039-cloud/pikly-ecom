@@ -1,0 +1,46 @@
+# fly.toml — Deploy Go cache-proxy to Fly.io
+# Free tier: 3 shared-cpu-1x VMs, 256 MB RAM each — always free, no credit card needed for basic use
+#
+# Deploy:
+#   fly launch   (first time)
+#   fly deploy   (updates)
+#   fly secrets set REDIS_ADDR=xxx UPSTREAM_URL=yyy
+
+app = "pikly-cache-proxy"
+primary_region = "iad"         # Washington DC — change to nearest: lhr, sin, nrt, syd
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT     = "4000"
+  GIN_MODE = "release"
+
+[[services]]
+  protocol    = "tcp"
+  internal_port = 4000
+
+  [[services.ports]]
+    port     = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port     = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type       = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[services.http_checks]]
+    interval       = "15s"
+    timeout        = "5s"
+    grace_period   = "10s"
+    method         = "get"
+    path           = "/health"
+    protocol       = "http"
+
+[metrics]
+  port = 9090
+  path = "/metrics"

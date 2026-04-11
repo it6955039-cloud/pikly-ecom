@@ -1,0 +1,139 @@
+# docker-compose.yml — OPTIONAL local dev stack (requires Docker Desktop)
+# ⚠️  NOT NEEDED FOR DEPLOYMENT — see DEPLOYMENT.md for free cloud setup
+# ⚠️  Use this only if you want to test everything locally with Docker Desktop
+#
+# Services:
+#   postgres     — PostgreSQL 16 (schema in sql/)
+#   redis        — Redis 7 (sessions + cache)
+#   api          — NestJS API (TypeScript)
+#   proxy        — Go cache-proxy (sits in front of api)
+#   pipeline     — Python ETL (one-shot seed runner)
+#
+# Usage:
+#   make up           # start full stack
+#   make seed         # run Python ETL pipeline
+#   make logs         # follow all logs
+#   docker compose up api  # start just the API
+#
+# Ports exposed to host:
+#   5432  postgres
+#   6379  redis
+#   3000  api (NestJS — direct, bypass proxy)
+#   4000  proxy (Go cache-proxy — production path)
+#   9090  prometheus metrics (proxy)
+
+version: "3.9"
+
+x-common-env: &common-env
+  NODE_ENV: development
+  DATABASE_URL: postgresql://pikly:pikly@postgres:5432/pikly?sslmode=disable
+  REDIS_URL: redis://redis:6379
+  REDIS_ADDR: redis:6379
+
+services:
+
+  # ── PostgreSQL 16 ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     pikly
+      POSTGRES_PASSWORD: pikly
+      POSTGRES_DB:       pikly
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./api/sql/000_full_schema.sql:/docker-entrypoint-initdb.d/000_full_schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pikly"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis 7 ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --appendonly no
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── NestJS API ───────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-refresh-secret-different}
+      ALGOLIA_APP_ID:    ${ALGOLIA_APP_ID:-}
+      ALGOLIA_WRITE_KEY: ${ALGOLIA_WRITE_KEY:-}
+      ALGOLIA_INDEX:     ${ALGOLIA_INDEX:-products}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Go cache-proxy ───────────────────────────────────────────────────────────
+  proxy:
+    build:
+      context: ./services/cache-proxy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT:         4000
+      UPSTREAM_URL: http://api:3000
+      REDIS_ADDR:   redis:6379
+      GIN_MODE:     release
+    depends_on:
+      api:   { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports:
+      - "4000:4000"
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Python ETL pipeline (one-shot runner) ────────────────────────────────────
+  pipeline:
+    build:
+      context: ./pipeline
+      dockerfile: Dockerfile
+    profiles: ["seed"]   # only runs with: docker compose --profile seed up pipeline
+    environment:
+      DATABASE_URL: postgresql://pikly:pikly@postgres:5432/pikly?sslmode=disable
+      JSONL_FILE:   /data/products_cleaned.jsonl
+    volumes:
+      - ${JSONL_DIR:-./data}:/data:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: ["python", "ingest.py", "--batch", "300"]
+
+volumes:
+  postgres_data:
+  redis_data:
