@@ -136,13 +136,13 @@ class EnrichedProduct(BaseModel):
     source: str      = 'pikly'          # ← changed from 'oxylabs'
     data:   DataBlob = Field(default_factory=DataBlob)
 
-    # _taxonomy / _flags use private-name aliasing (Pydantic v2 pattern)
-    _taxonomy:     Taxonomy  = Field(default_factory=Taxonomy, alias='_taxonomy')
-    _flags:        Flags     = Field(default_factory=Flags,    alias='_flags')
+    # taxonomy / flags use alias to accept underscore-prefixed keys from JSONL
+    taxonomy:     Taxonomy  = Field(default_factory=Taxonomy, alias='_taxonomy')
+    flags:        Flags     = Field(default_factory=Flags,    alias='_flags')
 
-    # _dummy_fields: present in old oxylabs dataset, absent in pikly.
+    # dummy_fields: present in old oxylabs dataset, absent in pikly.
     # Kept optional so the model accepts both formats without quarantining.
-    _dummy_fields: list[Any] = Field(default_factory=list, alias='_dummy_fields')
+    dummy_fields: list[Any] = Field(default_factory=list, alias='_dummy_fields')
 
     # enrichment_source_data: new pikly top-level field containing additional
     # scraper context (asinVariationValues, highResolutionImages, reviews, etc.)
@@ -156,11 +156,3 @@ class EnrichedProduct(BaseModel):
         return v.strip().upper()
 
     model_config = {'extra': 'allow', 'populate_by_name': True}
-
-    @property
-    def taxonomy(self) -> Taxonomy:
-        return self._taxonomy  # type: ignore[attr-defined]
-
-    @property
-    def flags(self) -> Flags:
-        return self._flags  # type: ignore[attr-defined]

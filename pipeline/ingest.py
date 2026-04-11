@@ -6,28 +6,21 @@ Architecture
   • Streams JSONL line-by-line (never loads the full file into RAM)
   • Validates each record with Pydantic v2 — invalid records quarantined
   • asyncpg for async PostgreSQL batch upserts
-  • Retries failed batches with exponential back-off (tenacity)
   • Structured JSON logging (structlog)
   • Rich progress bar + live stats
 
 Dataset: pikly (replaces oxylabs)
 Schema version: v5.0.0 — 2026-04
-Changes vs v4:
-  • Input file: products_discovery_enhanced.jsonl (post-engine) preferred;
-    falls back to products_cleaned.jsonl
-  • COLUMNS + JSONB_COLS expanded with 6 migration-004 columns:
-    thumbnails (TEXT[]), sponsored_brands, product_description,
-    search_metadata, search_parameters, enrichment_source_data (JSONB)
 
 Usage
   python ingest.py [JSONL_FILE] [OPTIONS]
   python ingest.py --help
 
 Examples
-  python ingest.py data/products_discovery_enhanced.jsonl --clear
-  python ingest.py data/products_discovery_enhanced.jsonl --batch 500
-  python ingest.py data/products_discovery_enhanced.jsonl --limit 200  # test run
-  DATABASE_URL=postgresql://... python ingest.py
+  python ingest.py ../api/data/products_discovery_enhanced.jsonl
+  python ingest.py ../api/data/products_discovery_enhanced.jsonl --batch 500
+  python ingest.py ../api/data/products_discovery_enhanced.jsonl --limit 200 --dry-run
+  python ingest.py ../api/data/products_discovery_enhanced.jsonl --clear
 """
 from __future__ import annotations
 
@@ -52,7 +45,6 @@ from rich.progress import (
     SpinnerColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn,
 )
 from rich.table import Table
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from validate import EnrichedProduct
 from transform import to_db_row
@@ -62,7 +54,7 @@ log     = structlog.get_logger()
 console = Console()
 app     = typer.Typer(help='Pikly ETL pipeline — JSONL → PostgreSQL (v5.0.0)')
 
-# ── DB columns & UPSERT SQL ───────────────────────────────────────────────────
+# ── DB columns ────────────────────────────────────────────────────────────────
 
 COLUMNS = [
     'asin', 'slug', 'is_active', 'source',
@@ -78,7 +70,7 @@ COLUMNS = [
     'item_specs', 'about_item', 'bought_together', 'related_products',
     'product_details', 'accordion_content', 'reviews_info',
     'category_breadcrumb', 'videos', 'shipping_fees', 'flags', 'bestsellers_rank',
-    # ── NEW: migration 004 / pikly ─────────────────────────────────────────
+    # ── migration 004 / pikly ─────────────────────────────────────────────────
     'thumbnails',              # TEXT[]  — NOT in JSONB_COLS
     'sponsored_brands',        # JSONB
     'product_description',     # JSONB
@@ -87,21 +79,20 @@ COLUMNS = [
     'enrichment_source_data',  # JSONB
 ]
 
-# JSONB columns — asyncpg needs explicit JSON serialisation for these.
-# 'thumbnails' is TEXT[] and must NOT appear here.
+# JSONB columns — must be pre-serialised to JSON strings before passing to asyncpg.
+# 'thumbnails' is TEXT[] — intentionally excluded.
 JSONB_COLS = frozenset({
     'product_results', 'purchase_options', 'protection_plan',
     'item_specs', 'about_item', 'bought_together', 'related_products',
     'product_details', 'accordion_content', 'reviews_info',
     'category_breadcrumb', 'videos', 'shipping_fees', 'flags', 'bestsellers_rank',
-    # ── NEW ────────────────────────────────────────────────────────────────
-    'sponsored_brands',
-    'product_description',
-    'search_metadata',
-    'search_parameters',
-    'enrichment_source_data',
-    # NOTE: 'thumbnails' intentionally excluded — it is TEXT[], not JSONB
+    'sponsored_brands', 'product_description',
+    'search_metadata', 'search_parameters', 'enrichment_source_data',
 })
+
+# SQL: JSONB columns get an explicit ::jsonb cast so asyncpg sends them correctly.
+def _make_param(i: int, col: str) -> str:
+    return f'${i+1}::jsonb' if col in JSONB_COLS else f'${i+1}'
 
 UPDATE_CLAUSE = ',\n    '.join(
     f'{c} = EXCLUDED.{c}' for c in COLUMNS if c != 'asin'
@@ -109,49 +100,42 @@ UPDATE_CLAUSE = ',\n    '.join(
 
 UPSERT_SQL = f"""
 INSERT INTO store.products ({', '.join(COLUMNS)})
-VALUES ({', '.join(f'${i+1}' for i in range(len(COLUMNS)))})
+VALUES ({', '.join(_make_param(i, col) for i, col in enumerate(COLUMNS))})
 ON CONFLICT (asin) DO UPDATE SET
     {UPDATE_CLAUSE}
 """
 
 
-# ── asyncpg JSON codec ────────────────────────────────────────────────────────
+# ── Row serialiser ────────────────────────────────────────────────────────────
 
-def _encode_json(value: Any) -> str:
-    return orjson.dumps(value).decode()
+def _to_record(row: dict[str, Any]) -> tuple:
+    """Convert a transform row dict → asyncpg-ready tuple.
 
-def _decode_json(value: str) -> Any:
-    return orjson.loads(value)
+    JSONB columns are pre-serialised to JSON strings (matched with ::jsonb cast
+    in the SQL).  All other columns are passed as-is — asyncpg handles native
+    Python types (bool, int, float, list[str]) automatically.
+    """
+    return tuple(
+        json.dumps(row[col], default=str) if col in JSONB_COLS else row[col]
+        for col in COLUMNS
+    )
 
 
-# ── Batch upsert with retry ───────────────────────────────────────────────────
+# ── Upsert (no retry decorator — errors surface immediately) ──────────────────
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
-async def upsert_batch(
-    pool: asyncpg.Pool,
-    rows: list[dict[str, Any]],
-) -> int:
-    records = [
-        tuple(
-            orjson.dumps(row[col]).decode()
-            if col in JSONB_COLS and row[col] is not None
-            else row[col]
-            for col in COLUMNS
-        )
-        for row in rows
-    ]
+async def _upsert_batch(pool: asyncpg.Pool, records: list[tuple]) -> None:
+    """Execute one batch upsert.  Raises on failure so the caller can log it."""
     async with pool.acquire() as conn:
         await conn.executemany(UPSERT_SQL, records)
-    return len(rows)
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────────────
+# ── CLI entry point ───────────────────────────────────────────────────────────
 
 @app.command()
 def main(
     jsonl_file: Path = typer.Argument(
         None,
-        help='Path to products_discovery_enhanced.jsonl. Falls back to JSONL_FILE env var.',
+        help='Path to products_discovery_enhanced.jsonl.',
     ),
     batch:   int  = typer.Option(300,   help='Rows per database batch.'),
     limit:   int  = typer.Option(0,     help='Stop after N records (0 = all).'),
@@ -172,22 +156,19 @@ async def _async_main(
     dry_run:        bool,
     quarantine_dir: Path,
 ) -> None:
+
     # ── Resolve input file ────────────────────────────────────────────────────
-    # Priority: CLI arg > JSONL_FILE env > discovery-enhanced > cleaned > legacy
     candidates = [
         jsonl_file,
         Path(os.environ.get('JSONL_FILE', '')),
-        Path('data/products_discovery_enhanced.jsonl'),
         Path('../api/data/products_discovery_enhanced.jsonl'),
-        Path('data/products_cleaned.jsonl'),
+        Path('data/products_discovery_enhanced.jsonl'),
         Path('../api/data/products_cleaned.jsonl'),
-        # legacy oxylabs name — keep for back-compat during transition
         Path('data/products_cleaned.jsonl'),
-        Path('../data/products_cleaned.jsonl'),
     ]
     resolved: Path | None = next((p for p in candidates if p and p.exists()), None)
     if resolved is None:
-        console.print('[bold red]❌  No JSONL file found.[/] Provide as argument or set JSONL_FILE env var.')
+        console.print('[bold red]❌  No JSONL file found.[/]')
         raise typer.Exit(1)
 
     db_url = os.environ.get('DATABASE_URL', '')
@@ -202,28 +183,21 @@ async def _async_main(
         title='[bold white]⚡ Product Ingest',
     ))
 
-    # ── Setup quarantine ──────────────────────────────────────────────────────
+    # ── Quarantine ────────────────────────────────────────────────────────────
     quarantine_dir.mkdir(parents=True, exist_ok=True)
     quarantine_file = quarantine_dir / f'invalid_{int(time.time())}.jsonl'
     q_fh = open(quarantine_file, 'w', encoding='utf-8')
 
-    # ── Connect PostgreSQL ────────────────────────────────────────────────────
+    # ── PostgreSQL pool ───────────────────────────────────────────────────────
     pool: asyncpg.Pool | None = None
     if not dry_run:
-        pool = await asyncpg.create_pool(
-            db_url,
-            min_size=2, max_size=8,
-            ssl='require',
-            init=lambda c: c.set_type_codec(
-                'jsonb', encoder=_encode_json, decoder=_decode_json, schema='pg_catalog',
-            ),
-        )
+        pool = await asyncpg.create_pool(db_url, min_size=2, max_size=8, ssl='require')
         log.info('postgresql_connected')
 
         if clear:
             async with pool.acquire() as conn:
                 await conn.execute('TRUNCATE store.products CASCADE')
-            log.info('table_truncated', table='store.products')
+            log.info('table_truncated')
 
     # ── Progress bar ──────────────────────────────────────────────────────────
     progress = Progress(
@@ -237,24 +211,32 @@ async def _async_main(
     )
     task = progress.add_task('Ingesting…', total=limit or None)
 
-    stats   = {'total': 0, 'valid': 0, 'invalid': 0, 'upserted': 0, 'batches': 0}
-    pending: list[dict[str, Any]] = []
+    stats: dict[str, int] = {
+        'total': 0, 'valid': 0, 'invalid': 0, 'upserted': 0, 'batches': 0,
+    }
+    failed_batches: list[str] = []   # collect errors — print AFTER progress closes
+    pending: list[tuple] = []
     seen_slugs: set[str] = set()
 
+    # ── Flush helper ──────────────────────────────────────────────────────────
     async def flush() -> None:
-        if not pending or dry_run:
+        if not pending or dry_run or pool is None:
             pending.clear()
             return
         try:
-            n = await upsert_batch(pool, pending)  # type: ignore[arg-type]
-            stats['upserted'] += n
+            await _upsert_batch(pool, list(pending))   # pass a snapshot
+            stats['upserted'] += len(pending)
             stats['batches']  += 1
         except Exception as exc:
-            log.error('batch_failed', batch=stats['batches'], error=str(exc)[:200])
+            # Store error — print after progress bar closes so it's visible
+            msg = f"Batch {stats['batches']+1}: {str(exc)[:400]}"
+            failed_batches.append(msg)
+            log.error('batch_failed', error=str(exc)[:200])
         pending.clear()
 
     # ── Stream file ───────────────────────────────────────────────────────────
     t0 = time.monotonic()
+
     with progress:
         with open(resolved, 'rb') as fh:
             for raw_line in fh:
@@ -280,7 +262,7 @@ async def _async_main(
                 except ValidationError as exc:
                     stats['invalid'] += 1
                     q_fh.write(json.dumps({'_error': exc.errors(), '_raw': raw}) + '\n')
-                    log.warning('validation_failed', asin=raw.get('asin', '?'), errors=exc.error_count())
+                    log.warning('validation_failed', asin=raw.get('asin', '?'))
                     continue
 
                 # Transform
@@ -291,26 +273,33 @@ async def _async_main(
                     log.error('transform_failed', asin=product.asin, error=str(exc))
                     continue
 
-                # Deduplicate slugs within this run
+                # Deduplicate slugs within run
                 slug = row['slug']
                 if slug in seen_slugs:
                     row['slug'] = f"{slug}-{stats['total']}"
                 seen_slugs.add(row['slug'])
 
                 stats['valid'] += 1
-                pending.append(row)
+                pending.append(_to_record(row))
 
                 if len(pending) >= batch_size:
                     await flush()
 
                 progress.advance(task)
 
-        await flush()
+        await flush()   # final partial batch
 
     q_fh.close()
     elapsed = time.monotonic() - t0
 
-    # ── Final count ───────────────────────────────────────────────────────────
+    # ── Print any batch errors NOW (outside progress context — fully visible) ──
+    if failed_batches:
+        console.print('\n[bold red]━━━ BATCH ERRORS ━━━[/]')
+        for msg in failed_batches:
+            console.print(f'[red]❌ {msg}[/]')
+        console.print()
+
+    # ── Final DB count ────────────────────────────────────────────────────────
     active_count = 0
     if pool:
         async with pool.acquire() as conn:

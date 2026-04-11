@@ -24,14 +24,23 @@ export const FACET_DIMENSIONS: FacetDimension[] = [
   // ── Brand — disjunctive (OR multi-select) ───────────────────────────────────
   { queryKey:'brand',      algoliaAttr:'brand',          type:'disjunctive',  label:'Brand',            disjunctive:true,  maxValues:100, searchable:true,  sortBy:'count' },
 
-  // ── Price range ─────────────────────────────────────────────────────────────
-  { queryKey:'price',      algoliaAttr:'price',          type:'range',        label:'Price',            disjunctive:false, maxValues:0,   searchable:false, sortBy:'count' },
+  // ── Price ──────────────────────────────────────────────────────────────────────
+  // Numeric range for slider (min/max filter)
+  { queryKey:'price',         algoliaAttr:'price',          type:'range',        label:'Price',            disjunctive:false, maxValues:0,   searchable:false, sortBy:'count' },
+  // Predefined price buckets (Amazon-style disjunctive string facet)
+  { queryKey:'priceRange',    algoliaAttr:'priceRange',     type:'disjunctive',  label:'Price Range',      disjunctive:true,  maxValues:10,  searchable:false, sortBy:'alpha' },
 
   // ── Rating ──────────────────────────────────────────────────────────────────
-  { queryKey:'rating',     algoliaAttr:'avgRating',     type:'range',        label:'Customer Rating',  disjunctive:false, maxValues:0,   searchable:false, sortBy:'count' },
+  // Numeric range for slider
+  { queryKey:'rating',        algoliaAttr:'avgRating',      type:'range',        label:'Avg. Rating',      disjunctive:false, maxValues:0,   searchable:false, sortBy:'count' },
+  // Predefined rating buckets (Amazon-style: 4 Stars & Up etc.)
+  { queryKey:'ratingBucket',  algoliaAttr:'ratingBucket',   type:'disjunctive',  label:'Customer Review',  disjunctive:true,  maxValues:5,   searchable:false, sortBy:'alpha' },
 
-  // ── Discount ────────────────────────────────────────────────────────────────
-  { queryKey:'discount',   algoliaAttr:'discountPercent',   type:'range',        label:'Discount',         disjunctive:false, maxValues:0,   searchable:false, sortBy:'count' },
+  // ── Discount ─────────────────────────────────────────────────────────────────
+  // Numeric range for slider
+  { queryKey:'discount',      algoliaAttr:'discountPercent', type:'range',       label:'Discount %',       disjunctive:false, maxValues:0,   searchable:false, sortBy:'count' },
+  // Predefined discount buckets
+  { queryKey:'discountRange', algoliaAttr:'discountRange',  type:'disjunctive',  label:'Discount',         disjunctive:true,  maxValues:5,   searchable:false, sortBy:'alpha' },
 
   // ── Colors + Sizes (from variants in scraped data) ───────────────────────────
   { queryKey:'color',      algoliaAttr:'colors',         type:'disjunctive',  label:'Color',            disjunctive:true,  maxValues:50,  searchable:false, sortBy:'count' },
