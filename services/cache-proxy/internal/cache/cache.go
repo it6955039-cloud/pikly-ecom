@@ -7,6 +7,7 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"sync/atomic"
@@ -60,6 +61,7 @@ func New(addr, password string, db int, cfg Config, log *zap.Logger) *Store {
 		Addr:         addr,
 		Password:     password,
 		DB:           db,
+		TLSConfig:    &tls.Config{},
 		DialTimeout:  2 * time.Second,
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
