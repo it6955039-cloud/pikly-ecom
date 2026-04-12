@@ -173,7 +173,7 @@ const SKIP_KEYS = new Set<string>([
   'best_sellers_rank','size_and_weight',
 ])
 
-const GEMINI_MODEL = 'gemini-1.5-flash' as const
+const GEMINI_MODEL = 'gemini-2.0-flash' as const
 
 // Accordion prompt — version-pinned. Bump AI_PROMPT_VERSION to re-generate all.
 function buildAccordionPrompt(title: string, attrs: Record<string, string>): string {

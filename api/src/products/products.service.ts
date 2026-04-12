@@ -26,70 +26,70 @@ import { ReviewQueryDto } from './dto/review-query.dto'
 import { SubmitReviewDto } from './dto/submit-review.dto'
 
 // ── Field extractors ──────────────────────────────────────────────────────────
-const gTitle   = (p: any): string => p.title ?? p.product_results?.title ?? ''
-const gBrand   = (p: any): string =>
+const gTitle = (p: any): string => p.title ?? p.product_results?.title ?? ''
+const gBrand = (p: any): string =>
   (p.brand ?? p.product_results?.brand ?? '').replace(/^Visit the\s+|\s+Store\s*$/gi, '').trim()
-const gPrice   = (p: any): number => p.price ?? p.product_results?.extracted_price ?? 0
-const gOldPx   = (p: any): number | null =>
+const gPrice = (p: any): number => p.price ?? p.product_results?.extracted_price ?? 0
+const gOldPx = (p: any): number | null =>
   p.original_price ?? p.product_results?.extracted_old_price ?? null
-const gRating  = (p: any): number => p.avg_rating ?? p.product_results?.rating ?? 0
+const gRating = (p: any): number => p.avg_rating ?? p.product_results?.rating ?? 0
 const gReviews = (p: any): number => p.review_count ?? p.product_results?.reviews ?? 0
-const gDisc    = (p: any): number => p.discount_pct ?? 0
-const gImage   = (p: any): string => p.thumbnail ?? p.product_results?.thumbnail ?? ''
-const gThumbs  = (p: any): string[] => p.thumbnails ?? p.product_results?.thumbnails ?? []
+const gDisc = (p: any): number => p.discount_pct ?? 0
+const gImage = (p: any): string => p.thumbnail ?? p.product_results?.thumbnail ?? ''
+const gThumbs = (p: any): string[] => p.thumbnails ?? p.product_results?.thumbnails ?? []
 const gInStock = (p: any): boolean => p.in_stock ?? p.flags?.inStock ?? true
-const gPrime   = (p: any): boolean => p.is_prime ?? p.flags?.isPrime ?? false
-const gOnSale  = (p: any): boolean => p.is_on_sale ?? p.flags?.isOnSale ?? false
-const gDept    = (p: any): string => p.taxonomy_dept ?? ''
-const gSubcat  = (p: any): string => p.taxonomy_subcat ?? ''
+const gPrime = (p: any): boolean => p.is_prime ?? p.flags?.isPrime ?? false
+const gOnSale = (p: any): boolean => p.is_on_sale ?? p.flags?.isOnSale ?? false
+const gDept = (p: any): string => p.taxonomy_dept ?? ''
+const gSubcat = (p: any): string => p.taxonomy_subcat ?? ''
 
 const gBadges = (p: any): string[] => {
   const b = new Set<string>(p.product_results?.badges ?? [])
-  if (p.is_best_seller   || p.flags?.isBestSeller)    b.add('Best Seller')
+  if (p.is_best_seller || p.flags?.isBestSeller) b.add('Best Seller')
   if (p.is_amazon_choice || p.flags?.isAmazonsChoice) b.add("Amazon's Choice")
-  if (p.is_trending      || p.flags?.isTrending)      b.add('Trending')
-  if (p.is_free_ship     || p.flags?.isFreeShipping)  b.add('Free Shipping')
-  if (p.is_deal          || p.flags?.isDeal)           b.add('Deal')
-  if (p.is_new_release   || p.flags?.isNewRelease)     b.add('New Release')
+  if (p.is_trending || p.flags?.isTrending) b.add('Trending')
+  if (p.is_free_ship || p.flags?.isFreeShipping) b.add('Free Shipping')
+  if (p.is_deal || p.flags?.isDeal) b.add('Deal')
+  if (p.is_new_release || p.flags?.isNewRelease) b.add('New Release')
   return [...b]
 }
 
 function buildFlags(p: any): Record<string, boolean> {
   const f = p.flags ?? {}
   return {
-    isBestSeller:    f.isBestSeller    ?? p.is_best_seller    ?? false,
-    isAmazonsChoice: f.isAmazonsChoice ?? p.is_amazon_choice  ?? false,
-    isTrending:      f.isTrending      ?? p.is_trending       ?? false,
+    isBestSeller: f.isBestSeller ?? p.is_best_seller ?? false,
+    isAmazonsChoice: f.isAmazonsChoice ?? p.is_amazon_choice ?? false,
+    isTrending: f.isTrending ?? p.is_trending ?? false,
     isHighlyPopular: f.isHighlyPopular ?? false,
-    isNewRelease:    f.isNewRelease    ?? p.is_new_release     ?? false,
-    isFreeShipping:  f.isFreeShipping  ?? p.is_free_ship      ?? false,
-    isPrime:         f.isPrime         ?? p.is_prime           ?? false,
-    isOnSale:        f.isOnSale        ?? p.is_on_sale         ?? false,
-    isDeal:          f.isDeal          ?? p.is_deal            ?? false,
-    isTopRated:      f.isTopRated      ?? p.is_top_rated       ?? false,
-    inStock:         f.inStock         ?? p.in_stock           ?? true,
+    isNewRelease: f.isNewRelease ?? p.is_new_release ?? false,
+    isFreeShipping: f.isFreeShipping ?? p.is_free_ship ?? false,
+    isPrime: f.isPrime ?? p.is_prime ?? false,
+    isOnSale: f.isOnSale ?? p.is_on_sale ?? false,
+    isDeal: f.isDeal ?? p.is_deal ?? false,
+    isTopRated: f.isTopRated ?? p.is_top_rated ?? false,
+    inStock: f.inStock ?? p.in_stock ?? true,
   }
 }
 
 function toCard(p: any) {
   return {
-    asin:         p.asin,
-    slug:         p.slug,
-    title:        gTitle(p),
-    brand:        gBrand(p),
-    thumbnail:    gImage(p),
-    thumbnails:   gThumbs(p),
-    price:        gPrice(p),
-    originalPrice:gOldPx(p),
-    discountPct:  gDisc(p),
-    avgRating:    gRating(p),
-    reviewCount:  gReviews(p),
-    isPrime:      gPrime(p),
-    inStock:      gInStock(p),
-    isOnSale:     gOnSale(p),
-    badges:       gBadges(p).slice(0, 3),
-    dept:         gDept(p),
-    subcat:       gSubcat(p),
+    asin: p.asin,
+    slug: p.slug,
+    title: gTitle(p),
+    brand: gBrand(p),
+    thumbnail: gImage(p),
+    thumbnails: gThumbs(p),
+    price: gPrice(p),
+    originalPrice: gOldPx(p),
+    discountPct: gDisc(p),
+    avgRating: gRating(p),
+    reviewCount: gReviews(p),
+    isPrime: gPrime(p),
+    inStock: gInStock(p),
+    isOnSale: gOnSale(p),
+    badges: gBadges(p).slice(0, 3),
+    dept: gDept(p),
+    subcat: gSubcat(p),
   }
 }
 
@@ -123,21 +123,13 @@ export class ProductsService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    // initializeAsync() MUST complete before the Redis subscriber is registered.
-    //
-    // Previous bug: the subscriber was registered synchronously inside onModuleInit()
-    // before the first loadProducts() resolved.  If a `products:invalidate` pub/sub
-    // message arrived during the ~50–200ms startup window, the handler would call
-    // loadProducts() while this.loadingPromise was still pending, racing against the
-    // initial load and potentially leaving this.products undefined mid-request.
-    //
-    // Fix: await the initial load first, then subscribe.  The Redis subscriber will
-    // only receive messages after the in-memory store is fully populated.
+    // Load products in the background so Nest can finish startup.
+    // The in-memory store is still protected by ensureLoaded() for requests.
     this.loadingPromise = this.initializeAsync()
-    await this.loadingPromise
   }
 
   private async initializeAsync(): Promise<void> {
+    this.logger.log('Products background initialization started')
     try {
       await this.db.waitUntilReady()
       await this.loadProducts()
@@ -194,51 +186,64 @@ export class ProductsService implements OnModuleInit {
     await this.redis.publish('products:invalidate', Date.now().toString())
   }
 
-  findActiveProducts() { return this.products }
-  findProductByAsin(asin: string) { return this.products.find((p) => p.asin === asin) }
-  findProductBySlug(slug: string) { return this.products.find((p) => p.slug === slug) }
+  findActiveProducts() {
+    return this.products
+  }
+  findProductByAsin(asin: string) {
+    return this.products.find((p) => p.asin === asin)
+  }
+  findProductBySlug(slug: string) {
+    return this.products.find((p) => p.slug === slug)
+  }
 
   getFeatured(limit = 20) {
     return this.products
       .filter((p) => p.is_amazon_choice || p.is_best_seller)
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit).map(toCard)
+      .slice(0, limit)
+      .map(toCard)
   }
   getBestSellers(limit = 20) {
     return this.products
       .filter((p) => p.is_best_seller)
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit).map(toCard)
+      .slice(0, limit)
+      .map(toCard)
   }
   getNewArrivals(limit = 20) {
     return this.products
       .filter((p) => p.is_new_release)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, limit).map(toCard)
+      .slice(0, limit)
+      .map(toCard)
   }
   getTrending(limit = 20) {
     return this.products
       .filter((p) => p.is_trending)
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit).map(toCard)
+      .slice(0, limit)
+      .map(toCard)
   }
   getTopRated(limit = 20) {
     return this.products
       .filter((p) => p.is_top_rated || (gRating(p) >= 4.5 && gReviews(p) >= 100))
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit).map(toCard)
+      .slice(0, limit)
+      .map(toCard)
   }
   getOnSale(limit = 20) {
     return this.products
       .filter((p) => gOnSale(p) || gDisc(p) >= 10)
       .sort((a, b) => gDisc(b) - gDisc(a))
-      .slice(0, limit).map(toCard)
+      .slice(0, limit)
+      .map(toCard)
   }
   getByDept(dept: string, limit = 20) {
     return this.products
       .filter((p) => gDept(p).toLowerCase() === dept.toLowerCase())
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit).map(toCard)
+      .slice(0, limit)
+      .map(toCard)
   }
 
   getSuggestions(q: string, limit = 8) {
@@ -249,14 +254,14 @@ export class ProductsService implements OnModuleInit {
       minMatchCharLength: 2,
     })
     return fuse.search(q.trim(), { limit }).map(({ item }: any) => ({
-      asin:      item.asin,
-      slug:      item.slug,
-      title:     gTitle(item),
-      brand:     gBrand(item),
+      asin: item.asin,
+      slug: item.slug,
+      title: gTitle(item),
+      brand: gBrand(item),
       thumbnail: gImage(item),
-      price:     gPrice(item),
+      price: gPrice(item),
       avgRating: gRating(item),
-      dept:      gDept(item),
+      dept: gDept(item),
     }))
   }
 
@@ -299,36 +304,36 @@ export class ProductsService implements OnModuleInit {
     // bought_together comes from Discovery Engine output (stored in DB column)
     const rawBt: any[] = full.bought_together ?? []
     const frequentlyBoughtWith = rawBt.slice(0, 4).map((b: any) => ({
-      asin:      b.asin ?? '',
-      title:     (b.title ?? '').slice(0, 80),
+      asin: b.asin ?? '',
+      title: (b.title ?? '').slice(0, 80),
       thumbnail: b.thumbnail ?? '',
-      price:     b.price ?? b.extracted_price ?? 0,
+      price: b.price ?? b.extracted_price ?? 0,
       avgRating: b.rating ?? 0,
-      reviews:   b.reviews ?? 0,
+      reviews: b.reviews ?? 0,
     }))
 
     const sf = full.shipping_fees ?? {}
 
     return {
-      asin:   p.asin,
-      slug:   p.slug,
+      asin: p.asin,
+      slug: p.slug,
       source: p.source ?? 'pikly',
 
       data: {
-        product_results:     full.product_results      ?? {},
-        purchase_options:    full.purchase_options     ?? {},
-        protection_plan:     full.protection_plan      ?? [],
-        item_specifications: full.item_specs           ?? {},
-        about_item:          full.about_item           ?? [],
-        bought_together:     rawBt,
-        related_products:    full.related_products     ?? [],
-        videos:              full.videos               ?? [],
-        product_details:     full.product_details      ?? {},
-        reviews_information: full.reviews_info         ?? {},
-        category:            full.category_breadcrumb  ?? [],
-        accordionContent:    full.accordion_content    ?? [],
-        shippingFees:        sf,
-        bestsellers_rank:    p.bestsellers_rank        ?? [],
+        product_results: full.product_results ?? {},
+        purchase_options: full.purchase_options ?? {},
+        protection_plan: full.protection_plan ?? [],
+        item_specifications: full.item_specs ?? {},
+        about_item: full.about_item ?? [],
+        bought_together: rawBt,
+        related_products: full.related_products ?? [],
+        videos: full.videos ?? [],
+        product_details: full.product_details ?? {},
+        reviews_information: full.reviews_info ?? {},
+        category: full.category_breadcrumb ?? [],
+        accordionContent: full.accordion_content ?? [],
+        shippingFees: sf,
+        bestsellers_rank: p.bestsellers_rank ?? [],
       },
 
       // enrichment_source_data: pikly-specific enrichment context.
@@ -337,34 +342,34 @@ export class ProductsService implements OnModuleInit {
       enrichment_source_data: full.enrichment_source_data ?? {},
 
       _taxonomy: {
-        department:  p.taxonomy_dept  ?? '',
+        department: p.taxonomy_dept ?? '',
         subcategory: p.taxonomy_subcat ?? '',
       },
 
       _flags: buildFlags(p),
 
       _computed: {
-        title:           gTitle(p),
-        brand:           gBrand(p),
-        mainImage:       gImage(p),
-        thumbnails:      gThumbs(p),
-        price:           gPrice(p),
-        originalPrice:   gOldPx(p),
-        discountPct:     gDisc(p),
-        avgRating:       gRating(p),
-        reviewCount:     gReviews(p),
-        badges:          gBadges(p),
-        inStock:         gInStock(p),
-        isPrime:         gPrime(p),
-        stockStatus:     gInStock(p) ? 'in_stock' : 'out_of_stock',
+        title: gTitle(p),
+        brand: gBrand(p),
+        mainImage: gImage(p),
+        thumbnails: gThumbs(p),
+        price: gPrice(p),
+        originalPrice: gOldPx(p),
+        discountPct: gDisc(p),
+        avgRating: gRating(p),
+        reviewCount: gReviews(p),
+        badges: gBadges(p),
+        inStock: gInStock(p),
+        isPrime: gPrime(p),
+        stockStatus: gInStock(p) ? 'in_stock' : 'out_of_stock',
         deliveryEstimate: {
-          options:    sf.deliveryOptions ?? full.product_results?.delivery ?? [],
-          isFree:     sf.isFreeShipping  ?? gPrime(p),
-          isPrime:    gPrime(p),
-          soldBy:     sf.soldBy    ?? '',
-          shipsFrom:  sf.shipsFrom ?? '',
+          options: sf.deliveryOptions ?? full.product_results?.delivery ?? [],
+          isFree: sf.isFreeShipping ?? gPrime(p),
+          isPrime: gPrime(p),
+          soldBy: sf.soldBy ?? '',
+          shipsFrom: sf.shipsFrom ?? '',
         },
-        relatedProducts:      related,
+        relatedProducts: related,
         frequentlyBoughtWith,
       },
     }
@@ -394,8 +399,7 @@ export class ProductsService implements OnModuleInit {
     else if (sort === 'helpful')
       // Fixed: parseHelpfulVotes handles both "" and "N people found this helpful"
       reviews.sort(
-        (a: any, b: any) =>
-          parseHelpfulVotes(b.helpful_votes) - parseHelpfulVotes(a.helpful_votes),
+        (a: any, b: any) => parseHelpfulVotes(b.helpful_votes) - parseHelpfulVotes(a.helpful_votes),
       )
     else if (sort === 'rating_high')
       reviews.sort((a: any, b: any) => (b.rating ?? 0) - (a.rating ?? 0))
@@ -405,8 +409,8 @@ export class ProductsService implements OnModuleInit {
     return {
       reviews: smartPaginate(reviews, { page: Number(page), limit: Number(limit) }),
       summary: {
-        average:      gRating(p),
-        total:        gReviews(p),
+        average: gRating(p),
+        total: gReviews(p),
         distribution: ri.summary?.customer_reviews ?? {},
       },
     }
@@ -471,16 +475,17 @@ export class ProductsService implements OnModuleInit {
     const row = await this.db.queryOne<any>(
       `INSERT INTO store.products (asin,slug,title,brand,price,original_price,discount_pct,thumbnail,taxonomy_dept,taxonomy_subcat,is_active,source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pikly') RETURNING asin,slug,title,brand,price,is_active`,
       [
-        asin, slug,
+        asin,
+        slug,
         data.title ?? '',
         data.brand ?? '',
         data.price ?? 0,
-        data.originalPrice  ?? null,
-        data.discountPct    ?? 0,
-        data.thumbnail      ?? null,
-        data.taxonomyDept   ?? '',
+        data.originalPrice ?? null,
+        data.discountPct ?? 0,
+        data.thumbnail ?? null,
+        data.taxonomyDept ?? '',
         data.taxonomySubcat ?? '',
-        data.isActive       ?? true,
+        data.isActive ?? true,
       ],
     )
     await this.invalidate()
@@ -489,8 +494,15 @@ export class ProductsService implements OnModuleInit {
 
   async adminUpdate(asin: string, data: any) {
     const allowed = [
-      'title','brand','price','original_price','discount_pct',
-      'is_active','thumbnail','taxonomy_dept','taxonomy_subcat',
+      'title',
+      'brand',
+      'price',
+      'original_price',
+      'discount_pct',
+      'is_active',
+      'thumbnail',
+      'taxonomy_dept',
+      'taxonomy_subcat',
     ]
     const sets = ['updated_at = NOW()']
     const vals: any[] = []

@@ -17,8 +17,7 @@
     "strictNullChecks": false,
     "noImplicitAny": false,
     "moduleResolution": "node",
-    "resolveJsonModule": true,
-    "ignoreDeprecations": "6.0"
+    "resolveJsonModule": true
   },
   "include": ["src/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "dist", "**/*.spec.ts", "jest.config.ts"]
