@@ -22,38 +22,38 @@ export class ProductsController {
 
   @Get('featured')
   @ApiOperation({ summary: 'Amazon\'s Choice + featured products' })
-  getFeatured(@Query('limit') limit = 20) {
-    return successResponse(this.productsService.getFeatured(Number(limit)))
+  async getFeatured(@Query('limit') limit = 20) {
+    return successResponse(await this.productsService.getFeatured(Number(limit)))
   }
 
   @Get('bestsellers')
   @ApiOperation({ summary: 'Best Sellers' })
-  getBestSellers(@Query('limit') limit = 20) {
-    return successResponse(this.productsService.getBestSellers(Number(limit)))
+  async getBestSellers(@Query('limit') limit = 20) {
+    return successResponse(await this.productsService.getBestSellers(Number(limit)))
   }
 
   @Get('new-arrivals')
   @ApiOperation({ summary: 'New Arrivals / New Releases' })
-  getNewArrivals(@Query('limit') limit = 20) {
-    return successResponse(this.productsService.getNewArrivals(Number(limit)))
+  async getNewArrivals(@Query('limit') limit = 20) {
+    return successResponse(await this.productsService.getNewArrivals(Number(limit)))
   }
 
   @Get('trending')
   @ApiOperation({ summary: 'Trending — 10K+ bought in past month' })
-  getTrending(@Query('limit') limit = 20) {
-    return successResponse(this.productsService.getTrending(Number(limit)))
+  async getTrending(@Query('limit') limit = 20) {
+    return successResponse(await this.productsService.getTrending(Number(limit)))
   }
 
   @Get('top-rated')
   @ApiOperation({ summary: 'Top Rated — 4.5★+ with 100+ reviews' })
-  getTopRated(@Query('limit') limit = 20) {
-    return successResponse(this.productsService.getTopRated(Number(limit)))
+  async getTopRated(@Query('limit') limit = 20) {
+    return successResponse(await this.productsService.getTopRated(Number(limit)))
   }
 
   @Get('on-sale')
   @ApiOperation({ summary: 'On Sale — 10%+ discount' })
-  getOnSale(@Query('limit') limit = 20) {
-    return successResponse(this.productsService.getOnSale(Number(limit)))
+  async getOnSale(@Query('limit') limit = 20) {
+    return successResponse(await this.productsService.getOnSale(Number(limit)))
   }
 
   // ── Search ─────────────────────────────────────────────────────────────────
@@ -61,8 +61,8 @@ export class ProductsController {
   @Get('search/suggestions')
   @ApiOperation({ summary: 'Autocomplete suggestions (Fuse.js fallback)' })
   @ApiQuery({ name: 'q', required: true })
-  getSuggestions(@Query('q') q: string, @Query('limit') limit = 8) {
-    return successResponse(this.productsService.getSuggestions(q, Number(limit)))
+  async getSuggestions(@Query('q') q: string, @Query('limit') limit = 8) {
+    return successResponse(await this.productsService.getSuggestions(q, Number(limit)))
   }
 
   // ── Main list (Algolia-powered) ────────────────────────────────────────────

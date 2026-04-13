@@ -16,6 +16,13 @@ dotenv.config()
 
 import { Pool }          from 'pg'
 import { algoliasearch } from 'algoliasearch'
+// Single source of truth for index settings — MUST stay in sync with algolia.service.ts.
+// Importing here prevents the sync script from silently reverting facet config on every run.
+import {
+  ALGOLIA_FACET_SETTINGS,
+  ALGOLIA_NUMERIC_ATTRS,
+  SORT_INDEX_MAP,
+} from '../src/algolia/facet-config'
 
 const args          = process.argv.slice(2)
 const CONFIGURE_ONLY = args.includes('--configure-only')
@@ -59,13 +66,23 @@ function toAlgoliaRecord(row: any): Record<string, any> {
     isDeal:           row.is_deal            ?? flags.isDeal      ?? false,
     taxonomyDept:     row.taxonomy_dept      ?? '',
     taxonomySubcat:   row.taxonomy_subcat    ?? '',
+    // Flat category/subcategory slugs — needed by searchable(category) + searchable(subcategory)
+    // in ALGOLIA_FACET_SETTINGS.  cat_lvl0/cat_lvl1 are the canonical DB columns for these.
+    category:         row.cat_lvl0           ?? row.taxonomy_dept    ?? '',
+    subcategory:      row.cat_lvl1           ?? row.taxonomy_subcat  ?? '',
+    // Algolia hierarchical lvl0–lvl3 for category tree drill-down
     'categories.lvl0': row.cat_lvl0          ?? '',
     'categories.lvl1': row.cat_lvl1          ?? '',
     'categories.lvl2': row.cat_lvl2          ?? '',
     'categories.lvl3': row.cat_lvl3          ?? '',
+    // condition + warehouse are not dedicated DB columns — read from flags JSONB or default.
+    // They ARE in ALGOLIA_FACET_SETTINGS so every record must carry them (even if empty string).
+    // Empty string means Algolia won't create a bucket — no harm, just no counts for that value.
+    condition:        flags.condition        ?? row.condition  ?? 'New',
+    warehouse:        flags.warehouse        ?? row.warehouse  ?? '',
     colors:           row.colors             ?? [],
     sizes:            row.sizes              ?? [],
-    attrValues:       (row.attr_values ?? []).slice(0, 50),
+    attrValues:       (row.attr_values ?? []).slice(0, 200), // trimRecord enforces 10KB hard limit
     createdAtMs:      new Date(row.created_at ?? Date.now()).getTime(),
     // ── Computed boolean fields — used by buildFilters() in algolia.service.ts ──
     // topRated:        true when avg_rating >= 4.5 AND review_count >= 100
@@ -109,66 +126,87 @@ function toAlgoliaRecord(row: any): Record<string, any> {
 }
 
 // ── Configure Algolia index settings ─────────────────────────────────────────
+// Uses ALGOLIA_FACET_SETTINGS and ALGOLIA_NUMERIC_ATTRS imported from facet-config.ts.
+// This is the single source of truth — algolia.service.ts configureIndex() uses the same
+// constants, so both code paths always push identical settings to Algolia.
 async function configureIndex(client: any) {
   console.log('⚙️   Configuring Algolia index…')
+
+  // Derive replica index names from the shared SORT_INDEX_MAP
+  const replicaNames = Object.values(SORT_INDEX_MAP).map((suffix) => `${INDEX_NAME}${suffix}`)
 
   await client.setSettings({
     indexName:     INDEX_NAME,
     indexSettings: {
+      // Searchable attributes — ordered by relevance weight.
+      // Position matters: title matches outrank description matches.
       searchableAttributes: [
-        'title', 'brand',
-        'unordered(taxonomyDept)', 'unordered(taxonomySubcat)',
+        'title',
+        'brand',
+        'unordered(tags)',
+        'unordered(asin)',
+        'unordered(taxonomyDept)',
+        'unordered(taxonomySubcat)',
+        'unordered(category)',
+        'unordered(subcategory)',
+        'unordered(categoryPath)',
+        'unordered(featureBullets)',
         'unordered(attrValues)',
+        'unordered(description)',
       ],
-      attributesForFaceting: [
-        'searchable(brand)', 'searchable(taxonomyDept)', 'searchable(taxonomySubcat)',
-        'searchable(colors)', 'searchable(sizes)', 'attrValues',
-        'inStock', 'isPrime', 'isFreeShip', 'isOnSale', 'isBestSeller',
-        'isTrending', 'isNewRelease', 'isDeal', 'isAmazonsChoice',
-        'topRated', 'featured', 'expressAvailable',
-        'categories.lvl0', 'categories.lvl1', 'categories.lvl2', 'categories.lvl3',
-      ],
-      numericAttributesForFiltering: [
-        'price', 'avgRating', 'discountPercent', 'reviewCount', 'createdAtMs',
-      ],
+      // Imported from facet-config.ts — identical to what algolia.service.ts pushes.
+      // Contains all facetable attributes WITHOUT filterOnly() so counts are returned.
+      attributesForFaceting: ALGOLIA_FACET_SETTINGS,
+      numericAttributesForFiltering: ALGOLIA_NUMERIC_ATTRS,
       customRanking: [
-        'desc(isBestSeller)', 'desc(avgRating)', 'desc(reviewCount)', 'desc(isPrime)',
+        'desc(isBestSeller)',
+        'desc(avgRating)',
+        'desc(reviewCount)',
+        'desc(isPrime)',
       ],
-      replicas: [
-        `${INDEX_NAME}_price_asc`, `${INDEX_NAME}_price_desc`,
-        `${INDEX_NAME}_rating_desc`, `${INDEX_NAME}_newest`,
-        `${INDEX_NAME}_discount_desc`, `${INDEX_NAME}_bestselling`,
-      ],
-      typoTolerance:       true,
-      minWordSizefor1Typo: 4,
-      minWordSizefor2Typos:8,
-      ignorePlurals:       true,
-      removeStopWords:     true,
-      advancedSyntax:      true,
-      queryType:           'prefixLast',
-      hitsPerPage:         20,
-      maxFacetHits:        100,
+      replicas: replicaNames,
+      typoTolerance:        true,
+      minWordSizefor1Typo:  4,
+      minWordSizefor2Typos: 8,
+      ignorePlurals:        true,
+      removeStopWords:      true,
+      advancedSyntax:       true,
+      queryType:            'prefixLast',
+      hitsPerPage:          20,
+      // maxValuesPerFacet: 500 matches the search query setting in algolia.service.ts
+      // so the dashboard view and API response always return the same counts.
+      maxValuesPerFacet:    500,
       attributesToHighlight: ['title', 'brand'],
       highlightPreTag:       '<mark>',
       highlightPostTag:      '</mark>',
     },
   })
 
-  // Sort replicas
-  const replicas: [string, string, string][] = [
-    [`${INDEX_NAME}_price_asc`,    'price',           'asc'],
+  // ── Sort replica indexes — one per sort option ──────────────────────────────
+  // Each replica only overrides ranking; inherits all other settings from main.
+  const replicaConfigs: Array<[string, string, string]> = [
+    [`${INDEX_NAME}_price_asc`,    'price',           'asc' ],
     [`${INDEX_NAME}_price_desc`,   'price',           'desc'],
     [`${INDEX_NAME}_rating_desc`,  'avgRating',       'desc'],
     [`${INDEX_NAME}_newest`,       'createdAtMs',     'desc'],
     [`${INDEX_NAME}_discount_desc`,'discountPercent', 'desc'],
-    [`${INDEX_NAME}_bestselling`,  'reviewCount',     'desc'],  // Most reviewed = best selling proxy
+    [`${INDEX_NAME}_bestselling`,  'reviewCount',     'desc'],
   ]
 
-  await Promise.allSettled(replicas.map(([name, field, dir]) =>
+  await Promise.allSettled(replicaConfigs.map(([name, field, dir]) =>
     client.setSettings({
       indexName: name,
       indexSettings: {
-        ranking: [`${dir}(${field})`, 'typo','geo','words','filters','proximity','attribute','exact','custom'],
+        ranking: [
+          `${dir}(${field})`,
+          'typo', 'geo', 'words', 'filters', 'proximity', 'attribute', 'exact', 'custom',
+        ],
+        customRanking: [
+          'desc(isBestSeller)',
+          'desc(avgRating)',
+          'desc(reviewCount)',
+          'desc(isPrime)',
+        ],
       },
     }),
   ))

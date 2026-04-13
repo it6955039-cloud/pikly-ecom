@@ -188,13 +188,14 @@ export class AlgoliaService implements OnModuleInit {
         highlightPostTag:      '</mark>',
 
         // ── Custom ranking — tie-breaker after text relevance ─────────────────
-        // When two products match equally, bestsellers + higher rated rank first
+        // Field names must match the Algolia record fields in toRecord() and
+        // sync-algolia-pg.ts.  isBestSeller is canonical; bestSeller is old alias.
         customRanking: [
-          'desc(bestSeller)',     // Best sellers first
+          'desc(isBestSeller)',   // Best sellers first (canonical)
           'desc(avgRating)',      // Higher rated next
-          'desc(soldCount)',      // Most sold next
+          'desc(reviewCount)',    // More reviews = more trustworthy signal
           'desc(isPrime)',        // Prime products next
-          'asc(discountPercent)', // Discounted products last (don't bias toward deals)
+          'asc(discountPercent)', // Deprioritise heavily discounted items
         ],
 
         // ── Sort replicas — one index per sort option ─────────────────────────
@@ -264,11 +265,13 @@ export class AlgoliaService implements OnModuleInit {
               'typo', 'geo', 'words', 'filters',
               'proximity', 'attribute', 'exact', 'custom',
             ],
-            // Replicas also need these for faceting to work correctly
+            // Replicas inherit all other settings; only override ranking + customRanking.
+            // Use same canonical field names as main index.
             customRanking: [
-              'desc(bestSeller)',
+              'desc(isBestSeller)',
               'desc(avgRating)',
-              'desc(soldCount)',
+              'desc(reviewCount)',
+              'desc(isPrime)',
             ],
           },
         }),
@@ -383,7 +386,6 @@ export class AlgoliaService implements OnModuleInit {
       discountPercent:  resolvedDiscount,
       discountAmount:   product.pricing?.discountAmount ?? 0,
       currency:         product.pricing?.currency ?? 'USD',
-      isDeal:           product.pricing?.isDeal ?? false,
       hasCoupon:        product.pricing?.coupon?.hasCoupon ?? false,
 
       // ── Ratings — numeric for range filters ───────────────────────────────────
@@ -398,22 +400,60 @@ export class AlgoliaService implements OnModuleInit {
       availabilityStatus: product.availability?.status ?? (resolvedInStock ? 'in_stock' : 'out_of_stock'),
 
       // ── Delivery & shipping ───────────────────────────────────────────────────
+      // Field names MUST match sync-algolia-pg.ts toAlgoliaRecord() exactly.
+      // Mismatches silently create two copies of the same logical field in the
+      // index — only one is in attributesForFaceting so filters/counts break.
       isPrime:           resolvedPrime,
-      freeShipping:     resolvedFreeShip,
-      expressAvailable: resolvedPrime,
+      isFreeShip:        resolvedFreeShip,      // was: freeShipping (wrong — sync uses isFreeShip)
+      expressAvailable:  resolvedPrime,
       fulfilledByAmazon: product.delivery?.isFulfilledByAmazon ?? false,
       soldByAmazon:      product.delivery?.isSoldByAmazon ?? false,
 
       // ── Badge booleans — all query-aware via Algolia facets ───────────────────
+      // Field names MUST match sync-algolia-pg.ts toAlgoliaRecord() exactly.
       featured:         resolvedChoice || resolvedBestSell,
-      bestSeller:       resolvedBestSell,
-      newArrival:       product.isNewRelease ?? flags.isNewRelease ?? product.newArrival ?? false,
-      trending:         resolvedTrending,
-      topRated:         resolvedRating >= 4.5 && resolvedReviews >= 500,
-      onSale:           resolvedOnSale,
+      isBestSeller:     resolvedBestSell,       // was: bestSeller
+      isNewRelease:     product.isNewRelease ?? flags.isNewRelease ?? product.newArrival ?? false, // was: newArrival
+      isTrending:       resolvedTrending,       // was: trending
+      // topRated threshold matches sync-algolia-pg.ts exactly (4.5★ + 100 reviews)
+      topRated:         resolvedRating >= 4.5 && resolvedReviews >= 100,
+      isOnSale:         resolvedOnSale,         // canonical
       isAmazonsChoice:  resolvedChoice,
-      isNewRelease:     product.isNewRelease ?? flags.isNewRelease ?? false,
-      recentSales:      product.badges?.recentSales     ?? null,
+      isDeal:           product.isDeal ?? flags.isDeal ?? product.pricing?.isDeal ?? false,
+      recentSales:      product.badges?.recentSales ?? null,
+
+      // ── String distribution buckets — MUST mirror sync-algolia-pg.ts exactly ───
+      // These power "Price Range", "Customer Review", and "Discount" facet panels.
+      // Both sync paths must produce identical bucket strings so Algolia can count
+      // products from either path into the same bucket.
+      priceRange: (() => {
+        const p = resolvedPrice
+        if (p <= 0)     return 'Price not available'
+        if (p < 10)     return 'Under $10'
+        if (p < 25)     return '$10 to $25'
+        if (p < 50)     return '$25 to $50'
+        if (p < 100)    return '$50 to $100'
+        if (p < 200)    return '$100 to $200'
+        if (p < 500)    return '$200 to $500'
+        if (p < 1000)   return '$500 to $1,000'
+        return 'Over $1,000'
+      })(),
+      ratingBucket: (() => {
+        const r = resolvedRating
+        if (r >= 4.5) return '4.5 Stars & Up'
+        if (r >= 4.0) return '4 Stars & Up'
+        if (r >= 3.5) return '3.5 Stars & Up'
+        if (r >= 3.0) return '3 Stars & Up'
+        return 'Under 3 Stars'
+      })(),
+      discountRange: (() => {
+        const d = resolvedDiscount
+        if (d <= 0)  return null    // null omitted by Algolia — no bucket for 0% discount
+        if (d < 10)  return 'Up to 10% off'
+        if (d < 25)  return '10% - 25% off'
+        if (d < 50)  return '25% - 50% off'
+        return 'Over 50% off'
+      })(),
 
       // ── Condition ────────────────────────────────────────────────────────────
       condition:        product.condition ?? product.shipping?.condition ?? 'New',
@@ -568,22 +608,20 @@ export class AlgoliaService implements OnModuleInit {
     }
 
     // Boolean filters — query-aware counts via Algolia facets
-    // [queryParam, algoliaField] — algoliaField MUST match toAlgoliaRecord() in sync-algolia-pg.ts
+    // [queryKey, algoliaField] — algoliaField MUST match toAlgoliaRecord() and sync-algolia-pg.ts.
+    // excludeDim check is applied to ALL entries here so disjunctive sub-queries stay correct.
     const boolFilters: Array<[keyof SearchQuery, string]> = [
-      ['inStock',          'inStock'],           // sync: inStock          ✓
-      ['freeShipping',     'isFreeShip'],         // sync: isFreeShip       (was 'freeShipping' — WRONG)
-      ['expressAvailable', 'expressAvailable'],   // sync: expressAvailable ✓ (added in v5.1)
-      ['onSale',           'isOnSale'],           // sync: isOnSale         (was 'onSale' — WRONG)
-      ['bestSeller',       'isBestSeller'],       // sync: isBestSeller     (was 'bestSeller' — WRONG)
-      ['featured',         'featured'],           // sync: featured         ✓ (added in v5.1)
-      ['newArrival',       'isNewRelease'],       // sync: isNewRelease     (was 'newArrival' — WRONG)
-      ['topRated',         'topRated'],           // sync: topRated         ✓ (added in v5.1)
-      ['trending',         'isTrending'],         // sync: isTrending       (was 'trending' — WRONG)
+      ['inStock',          'inStock'],           // sync: inStock
+      ['isPrime',          'isPrime'],           // sync: isPrime  ← was handled with (query as any), now unified
+      ['freeShipping',     'isFreeShip'],        // sync: isFreeShip
+      ['expressAvailable', 'expressAvailable'],  // sync: expressAvailable
+      ['onSale',           'isOnSale'],          // sync: isOnSale
+      ['bestSeller',       'isBestSeller'],      // sync: isBestSeller
+      ['featured',         'featured'],          // sync: featured
+      ['newArrival',       'isNewRelease'],      // sync: isNewRelease
+      ['topRated',         'topRated'],          // sync: topRated
+      ['trending',         'isTrending'],        // sync: isTrending
     ]
-    // isPrime handled separately (not in SearchQuery type yet)
-    if ((query as any).isPrime === true) {
-      parts.push('isPrime:true')
-    }
     for (const [qKey, algoliaKey] of boolFilters) {
       const val = query[qKey]
       if (excludeDim !== qKey && (val === true || val === 'true' || val === '1')) {
@@ -751,53 +789,78 @@ export class AlgoliaService implements OnModuleInit {
     const priceMin = priceStats ? Math.floor(priceStats.min) : 0
     const priceMax = priceStats ? Math.ceil(priceStats.max) : 9999
 
-    // ── Rating distribution — from Algolia facet stats ────────────────────────
-    const ratingStats = facetStats['avgRating']
-    const ratings = [5, 4, 3, 2, 1].map((star) => {
-      // Count from Algolia boolean facets: avgRating >= star
-      // We use the main result counts since rating is conjunctive
-      const key = String(star)
-      return {
-        value:    star,
-        label:    `${star}★ & above`,
-        selected: Number(query.rating) === star,
-        // Algolia doesn't give us "count with avgRating >= 4" directly,
-        // but we can compute it from the avgRating facet buckets
-        // For now we return the overall distribution from stats
-        min: ratingStats?.min ?? 0,
-        max: ratingStats?.max ?? 5,
-      }
-    })
+    // ── Price range buckets — from priceRange string facet ────────────────────
+    // Counts come from Algolia (not computed here). Order matches sync-algolia-pg.ts.
+    const priceRawCounts = mainFacets['priceRange'] ?? {}
+    const PRICE_BUCKET_ORDER = [
+      'Under $10', '$10 to $25', '$25 to $50', '$50 to $100',
+      '$100 to $200', '$200 to $500', '$500 to $1,000', 'Over $1,000',
+    ]
+    const priceRangeBuckets = PRICE_BUCKET_ORDER.map((bucket) => ({
+      value:    bucket,
+      label:    bucket,
+      count:    priceRawCounts[bucket] ?? 0,
+      selected: false,   // price is a range slider, not a bucket selector
+    })).filter((b) => b.count > 0)
 
-    // ── Discount ranges — from Algolia facet stats ────────────────────────────
+    // ── Rating distribution — per star tier from ratingBucket facet ──────────
+    // ratingBucket values come from Algolia counts (not computed here).
+    // Using ratingBucket instead of facet stats gives accurate per-tier counts.
+    const ratingBucketCounts = mainFacets['ratingBucket'] ?? {}
+    const ratingStats = facetStats['avgRating']
+    const ratings = [
+      { value: 4.5, label: '4.5★ & above', bucket: '4.5 Stars & Up' },
+      { value: 4.0, label: '4★ & above',   bucket: '4 Stars & Up'   },
+      { value: 3.5, label: '3.5★ & above', bucket: '3.5 Stars & Up' },
+      { value: 3.0, label: '3★ & above',   bucket: '3 Stars & Up'   },
+    ].map(({ value, label, bucket }) => ({
+      value,
+      label,
+      count:    ratingBucketCounts[bucket] ?? 0,
+      selected: Number(query.rating) === value,
+      min:      ratingStats?.min ?? 0,
+      max:      ratingStats?.max ?? 5,
+    }))
+
+    // ── Discount ranges — per bucket from discountRange facet ─────────────────
+    // Counts come from Algolia (not computed here). Numeric `value` is the
+    // threshold passed to buildFilters() as discountPercent >= value.
+    const discountBucketCounts = mainFacets['discountRange'] ?? {}
     const discountStats = facetStats['discountPercent']
-    const discountRanges = [70, 50, 25, 10].map((pct) => ({
-      value:    pct,
-      label:    `${pct}% off or more`,
-      selected: Number(query.discount) === pct,
+    const discountRanges = [
+      { value: 50, label: 'Over 50% off',   bucket: 'Over 50% off'   },
+      { value: 25, label: '25% - 50% off',  bucket: '25% - 50% off'  },
+      { value: 10, label: '10% - 25% off',  bucket: '10% - 25% off'  },
+      { value: 5,  label: 'Up to 10% off',  bucket: 'Up to 10% off'  },
+    ].map(({ value, label, bucket }) => ({
+      value,
+      label,
+      count:    discountBucketCounts[bucket] ?? 0,
+      selected: Number(query.discount) === value,
       max:      discountStats?.max ?? 100,
     }))
 
     // ── Boolean facets — counts from Algolia (query-aware) ────────────────────
     // mainFacets['inStock'] = { 'true': 1890, 'false': 450 }
-    // These counts reflect ONLY the products matching the current query.
+    // Counts reflect ONLY the products matching the current query.
+    // IMPORTANT: attribute names must match ALGOLIA_FACET_SETTINGS exactly.
     const getBoolCount = (attr: string) =>
       (mainFacets[attr]?.['true'] ?? 0)
 
     const availability = {
       inStock:         { count: getBoolCount('inStock'),          selected: query.inStock === true },
-      isPrime:         { count: getBoolCount('isPrime'),          selected: (query as any).isPrime === true },
-      freeShipping:    { count: getBoolCount('freeShipping'),     selected: query.freeShipping === true },
+      isPrime:         { count: getBoolCount('isPrime'),          selected: query.isPrime === true },
+      freeShipping:    { count: getBoolCount('isFreeShip'),       selected: query.freeShipping === true },
       expressDelivery: { count: getBoolCount('expressAvailable'), selected: query.expressAvailable === true },
     }
 
     const badges = {
-      onSale:     { count: getBoolCount('onSale'),      selected: query.onSale === true },
-      bestSeller: { count: getBoolCount('bestSeller'),  selected: query.bestSeller === true },
-      featured:   { count: getBoolCount('featured'),    selected: query.featured === true },
-      newArrival: { count: getBoolCount('newArrival'),  selected: query.newArrival === true },
-      topRated:   { count: getBoolCount('topRated'),    selected: query.topRated === true },
-      trending:   { count: getBoolCount('trending'),    selected: query.trending === true },
+      onSale:     { count: getBoolCount('isOnSale'),     selected: query.onSale === true },
+      bestSeller: { count: getBoolCount('isBestSeller'), selected: query.bestSeller === true },
+      featured:   { count: getBoolCount('featured'),     selected: query.featured === true },
+      newArrival: { count: getBoolCount('isNewRelease'), selected: query.newArrival === true },
+      topRated:   { count: getBoolCount('topRated'),     selected: query.topRated === true },
+      trending:   { count: getBoolCount('isTrending'),   selected: query.trending === true },
     }
 
     // ── New arrivals ──────────────────────────────────────────────────────────
@@ -829,6 +892,7 @@ export class AlgoliaService implements OnModuleInit {
           min: query.minPrice != null ? Number(query.minPrice) : priceMin,
           max: query.maxPrice != null ? Number(query.maxPrice) : priceMax,
         },
+        buckets: priceRangeBuckets,
       },
       ratings,
       discountRanges,
@@ -1163,10 +1227,11 @@ export class AlgoliaService implements OnModuleInit {
       // so whatever is configured on the index is returned — dashboard exact match
       facets: ['*'],
 
-      // maxValuesPerFacet (NOT maxFacetHits — that was wrong param):
-      // Controls how many values are returned per facet attribute.
-      // Dashboard default is 100, so we match it here.
-      maxValuesPerFacet: 100,
+      // maxValuesPerFacet controls how many values are returned per facet attribute.
+      // We set 500 to accommodate attrValues (specs) which can have hundreds of
+      // unique key:value pairs per category. All other facets are capped by
+      // per-dimension maxValues in buildFacetsResponse post-processing.
+      maxValuesPerFacet: 500,
 
       // Return all fields
       attributesToRetrieve:  ['*'],
@@ -1208,7 +1273,8 @@ export class AlgoliaService implements OnModuleInit {
         query:           searchText,
         filters:         this.buildFilters(query, qKey), // exclude this dim
         facets:          [dim.algoliaAttr],
-        maxValuesPerFacet: 100,
+        // Use the per-dimension maxValues so attrValues gets 500 while others get 100
+        maxValuesPerFacet: dim.maxValues > 0 ? dim.maxValues : 100,
         page:            0,
         hitsPerPage:     0,   // no hits needed, just counts
         analytics:       false, // don't track disjunctive helper queries
@@ -1297,16 +1363,32 @@ export class AlgoliaService implements OnModuleInit {
           mode:         'offset' as const,
         }
 
-    // ── Facets — 100% raw Algolia passthrough ────────────────────────────────
-    // Return EXACTLY what Algolia returns — same as dashboard.
-    // Only addition: merge disjunctive counts so multi-select shows correct totals.
+    // ── Facets — structured response via buildFacetsResponse ─────────────────
+    // Replaces the old raw passthrough. buildFacetsResponse corrects attr names,
+    // merges disjunctive counts, builds per-bucket counts for ratings/discounts/
+    // prices, and marks selected state so the UI does zero post-processing.
     let facets: any = null
     if (query.includeFacets) {
-      const raw = { ...(mainResult.facets ?? {}) }
-      for (const [attr, counts] of Object.entries(disjFacets)) {
-        raw[attr] = counts
+      const mainFacets: Record<string, Record<string, number>> =
+        (mainResult.facets as any) ?? {}
+
+      // Build slug → display name lookup from liveCategories passed in from products.service
+      const categoryLookup: Record<string, string> = {}
+      for (const cat of liveCategories) {
+        if (cat.slug && cat.name) categoryLookup[cat.slug] = cat.name
+        for (const sub of cat.subcategories ?? []) {
+          if (sub.slug && sub.name) categoryLookup[sub.slug] = sub.name
+        }
       }
-      facets = raw
+
+      facets = this.buildFacetsResponse(
+        mainFacets,
+        disjFacets,
+        facetStats,
+        colorHexMap,
+        query,
+        categoryLookup,
+      )
     }
 
     return {

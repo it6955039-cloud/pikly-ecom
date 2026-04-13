@@ -26,30 +26,42 @@ export class HomepageService implements OnModuleInit {
     const cached = this.cache.get<any>('homepage:main')
     if (cached) return { ...cached, cacheHit: true }
 
-    // Ensure products are loaded before using them
-    await this.products.ensureLoaded()
+    // Ensure products AND categories are loaded before using them
+    await Promise.all([
+      this.products.ensureLoaded(),
+      this.categories.ensureLoaded(),
+    ])
 
-    const banners = await this.getBanners()
-    const featured = this.products.getFeatured(12)
-    const bestsellers = this.products.getBestSellers(12)
-    const trending = this.products.getTrending(12)
-    const newArrivals = this.products.getNewArrivals(12)
-    const onSale = this.products.getOnSale(12)
-    const topRated = this.products.getTopRated(12)
-    const featuredCats = (await this.categories.findAll(true)).slice(0, 12)
+    // Run all data fetches in parallel — all methods are async with internal ensureLoaded guards
+    const [banners, featured, bestsellers, trending, newArrivals, onSale, topRated, deptRows] =
+      await Promise.all([
+        this.getBanners(),
+        this.products.getFeatured(12),
+        this.products.getBestSellers(12),
+        this.products.getTrending(12),
+        this.products.getNewArrivals(12),
+        this.products.getOnSale(12),
+        this.products.getTopRated(12),
+        this.db.query<{ name: string; product_count: number }>(
+          `SELECT name, product_count
+           FROM store.categories
+           WHERE parent_id IS NULL AND is_active = true
+           ORDER BY product_count DESC NULLS LAST
+           LIMIT 24`,
+        ),
+      ])
 
-    // FIX: dynamic departments from DB — not hardcoded to 6 departments
-    // Queries store.categories for top departments by product count
-    const deptRows = await this.db.query<{ name: string; product_count: number }>(
-      `SELECT name, product_count
-       FROM store.categories
-       WHERE parent_id IS NULL AND is_active = true
-       ORDER BY product_count DESC NULLS LAST
-       LIMIT 24`,
-    )
-    const deptSpotlights = deptRows
-      .map((row) => ({ dept: row.name, products: this.products.getByDept(row.name, 4) }))
-      .filter((d) => d.products.length > 0)
+    const featuredCats = this.categories.findAll(true).slice(0, 12)
+
+    // Build dept spotlights — getByDept is now async so await each in parallel
+    const deptSpotlights = (
+      await Promise.all(
+        deptRows.map(async (row) => ({
+          dept: row.name,
+          products: await this.products.getByDept(row.name, 4),
+        })),
+      )
+    ).filter((d) => d.products.length > 0)
 
     const data = {
       banners,

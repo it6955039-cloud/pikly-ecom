@@ -196,49 +196,56 @@ export class ProductsService implements OnModuleInit {
     return this.products.find((p) => p.slug === slug)
   }
 
-  getFeatured(limit = 20) {
+  async getFeatured(limit = 20) {
+    await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_amazon_choice || p.is_best_seller)
       .sort((a, b) => gRating(b) - gRating(a))
       .slice(0, limit)
       .map(toCard)
   }
-  getBestSellers(limit = 20) {
+  async getBestSellers(limit = 20) {
+    await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_best_seller)
       .sort((a, b) => gRating(b) - gRating(a))
       .slice(0, limit)
       .map(toCard)
   }
-  getNewArrivals(limit = 20) {
+  async getNewArrivals(limit = 20) {
+    await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_new_release)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, limit)
       .map(toCard)
   }
-  getTrending(limit = 20) {
+  async getTrending(limit = 20) {
+    await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_trending)
       .sort((a, b) => gRating(b) - gRating(a))
       .slice(0, limit)
       .map(toCard)
   }
-  getTopRated(limit = 20) {
+  async getTopRated(limit = 20) {
+    await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_top_rated || (gRating(p) >= 4.5 && gReviews(p) >= 100))
       .sort((a, b) => gRating(b) - gRating(a))
       .slice(0, limit)
       .map(toCard)
   }
-  getOnSale(limit = 20) {
+  async getOnSale(limit = 20) {
+    await this.ensureLoaded()
     return this.products
       .filter((p) => gOnSale(p) || gDisc(p) >= 10)
       .sort((a, b) => gDisc(b) - gDisc(a))
       .slice(0, limit)
       .map(toCard)
   }
-  getByDept(dept: string, limit = 20) {
+  async getByDept(dept: string, limit = 20) {
+    await this.ensureLoaded()
     return this.products
       .filter((p) => gDept(p).toLowerCase() === dept.toLowerCase())
       .sort((a, b) => gRating(b) - gRating(a))
@@ -246,7 +253,8 @@ export class ProductsService implements OnModuleInit {
       .map(toCard)
   }
 
-  getSuggestions(q: string, limit = 8) {
+  async getSuggestions(q: string, limit = 8) {
+    await this.ensureLoaded()
     if (!q || q.trim().length < 2) return []
     const fuse = new Fuse(this.products, {
       keys: ['title', 'brand', 'taxonomy_dept'],
@@ -267,13 +275,15 @@ export class ProductsService implements OnModuleInit {
 
   async findAll(query: FilterProductsDto) {
     await this.ensureLoaded()
-    const categories = await this.categories.findAll()
+    await this.categories.ensureLoaded()   // guard: categories load in parallel with products
+    const categories = this.categories.findAll()
     const result = await this.algolia.fullSearch(query as any, this.products, categories)
     return { data: result.data, cacheHit: false }
   }
 
   // ── findOne — canonical enterprise response shape ──────────────────────────
   async findOne(slugOrAsin: string) {
+    await this.ensureLoaded()
     const p = this.findProductBySlug(slugOrAsin) ?? this.findProductByAsin(slugOrAsin)
     if (!p)
       throw new NotFoundException({
@@ -376,6 +386,7 @@ export class ProductsService implements OnModuleInit {
   }
 
   async findReviews(slug: string, query: ReviewQueryDto) {
+    await this.ensureLoaded()
     const p = this.findProductBySlug(slug) ?? this.findProductByAsin(slug)
     if (!p) throw new NotFoundException({ code: 'PRODUCT_NOT_FOUND' })
 
