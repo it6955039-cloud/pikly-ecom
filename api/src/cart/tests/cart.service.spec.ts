@@ -1,37 +1,44 @@
 // src/cart/tests/cart.service.spec.ts — PostgreSQL, no Mongoose
-import { Test, TestingModule }   from '@nestjs/testing'
 import { BadRequestException, NotFoundException } from '@nestjs/common'
-import { CartService }           from '../cart.service'
-import { DatabaseService }       from '../../database/database.service'
-import { ProductsService }       from '../../products/products.service'
+import { ConfigService } from '@nestjs/config'
+import { Test, TestingModule } from '@nestjs/testing'
+import { DatabaseService } from '../../database/database.service'
+import { ProductsService } from '../../products/products.service'
+import { CartService } from '../cart.service'
 
 const SESSION = 'test-session-abc'
 const USER_ID = 'bbbbbbbb-0000-0000-0000-000000000001'
 
 const mockProduct = {
-  asin: 'B001', slug: 'widget', title: 'Widget Pro', brand: 'Acme',
-  price: 19.99, productResults: { title: 'Widget Pro', thumbnail: 'img.jpg' },
+  asin: 'B001',
+  slug: 'widget',
+  title: 'Widget Pro',
+  brand: 'Acme',
+  price: 19.99,
+  productResults: { title: 'Widget Pro', thumbnail: 'img.jpg' },
 }
 
 function makeDatabaseService() {
   return {
-    query:    jest.fn().mockResolvedValue([]),
+    query: jest.fn().mockResolvedValue([]),
     queryOne: jest.fn().mockResolvedValue(null),
-    execute:  jest.fn().mockResolvedValue(1),
+    execute: jest.fn().mockResolvedValue(1),
   }
 }
 
 function makeEmptyCart(overrides: any = {}) {
   return {
-    session_id: SESSION, user_id: null,
-    items: [], coupon: null,
+    session_id: SESSION,
+    user_id: null,
+    items: [],
+    coupon: null,
     ...overrides,
   }
 }
 
 describe('CartService', () => {
   let service: CartService
-  let db:      ReturnType<typeof makeDatabaseService>
+  let db: ReturnType<typeof makeDatabaseService>
   let productsService: any
 
   beforeEach(async () => {
@@ -44,8 +51,9 @@ describe('CartService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CartService,
-        { provide: DatabaseService,  useValue: db },
-        { provide: ProductsService,  useValue: productsService },
+        { provide: DatabaseService, useValue: db },
+        { provide: ProductsService, useValue: productsService },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile()
 
@@ -57,8 +65,8 @@ describe('CartService', () => {
   describe('getCart', () => {
     it('creates a new empty cart when session does not exist', async () => {
       db.queryOne
-        .mockResolvedValueOnce(null)             // SELECT — not found
-        .mockResolvedValueOnce(makeEmptyCart())  // INSERT RETURNING
+        .mockResolvedValueOnce(null) // SELECT — not found
+        .mockResolvedValueOnce(makeEmptyCart()) // INSERT RETURNING
 
       const result = await service.getCart(SESSION)
       expect(result.items).toHaveLength(0)
@@ -96,8 +104,8 @@ describe('CartService', () => {
         items: [{ productId: 'B001', quantity: 1, price: 19.99, subtotal: 19.99 }],
       })
       db.queryOne
-        .mockResolvedValueOnce(emptyCart)    // getOrCreate
-        .mockResolvedValueOnce(updatedCart)  // UPDATE RETURNING
+        .mockResolvedValueOnce(emptyCart) // getOrCreate
+        .mockResolvedValueOnce(updatedCart) // UPDATE RETURNING
 
       const result = await service.addItem({ sessionId: SESSION, productId: 'B001', quantity: 1 })
       expect(result.items).toHaveLength(1)
@@ -111,9 +119,7 @@ describe('CartService', () => {
       const updatedCart = makeEmptyCart({
         items: [{ productId: 'B001', quantity: 2, price: 19.99, subtotal: 39.98 }],
       })
-      db.queryOne
-        .mockResolvedValueOnce(cartWithItem)
-        .mockResolvedValueOnce(updatedCart)
+      db.queryOne.mockResolvedValueOnce(cartWithItem).mockResolvedValueOnce(updatedCart)
 
       const result = await service.addItem({ sessionId: SESSION, productId: 'B001', quantity: 1 })
       expect(result.items[0].quantity).toBe(2)
@@ -123,11 +129,11 @@ describe('CartService', () => {
       const cartWithItem = makeEmptyCart({
         items: [{ productId: 'B001', quantity: 9, price: 19.99, subtotal: 179.91 }],
       })
-      db.queryOne
-        .mockResolvedValueOnce(cartWithItem)
-        .mockResolvedValueOnce(makeEmptyCart({
-          items: [{ productId: 'B001', quantity: 10, price: 19.99, subtotal: 199.90 }],
-        }))
+      db.queryOne.mockResolvedValueOnce(cartWithItem).mockResolvedValueOnce(
+        makeEmptyCart({
+          items: [{ productId: 'B001', quantity: 10, price: 19.99, subtotal: 199.9 }],
+        }),
+      )
 
       const result = await service.addItem({ sessionId: SESSION, productId: 'B001', quantity: 5 })
       expect(result.items[0].quantity).toBe(10)
@@ -148,11 +154,13 @@ describe('CartService', () => {
       const cart = makeEmptyCart({
         items: [{ productId: 'B001', quantity: 2, price: 19.99, subtotal: 39.98 }],
       })
-      db.queryOne
-        .mockResolvedValueOnce(cart)
-        .mockResolvedValueOnce(makeEmptyCart({ items: [] }))
+      db.queryOne.mockResolvedValueOnce(cart).mockResolvedValueOnce(makeEmptyCart({ items: [] }))
 
-      const result = await service.updateItem({ sessionId: SESSION, productId: 'B001', quantity: 0 })
+      const result = await service.updateItem({
+        sessionId: SESSION,
+        productId: 'B001',
+        quantity: 0,
+      })
       expect(result.items).toHaveLength(0)
     })
   })
@@ -161,9 +169,7 @@ describe('CartService', () => {
 
   describe('applyCoupon', () => {
     it('throws INVALID_COUPON for expired or inactive coupon', async () => {
-      db.queryOne
-        .mockReset()
-        .mockResolvedValueOnce(null) // coupon not found
+      db.queryOne.mockReset().mockResolvedValueOnce(null) // coupon not found
 
       await expect(
         service.applyCoupon({ sessionId: SESSION, code: 'BADCODE' }, null),

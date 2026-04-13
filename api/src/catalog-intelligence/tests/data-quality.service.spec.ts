@@ -17,7 +17,7 @@
 
 import { Test, TestingModule } from '@nestjs/testing'
 import { DataQualityService } from '../services/data-quality.service'
-import { NeonService }        from '../services/neon.service'
+import { NeonService } from '../services/neon.service'
 import type { QualityIssue } from '../types/cil.types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -27,13 +27,13 @@ function buildRawJson(overrides: Record<string, unknown> = {}): Record<string, u
   return {
     data: {
       product_results: {
-        title:              'Sony WH-1000XM5 Wireless Noise Canceling Headphones',
-        brand:              'Sony',
-        rating:             4.6,
-        reviews:            14_496,
-        bought_last_month:  '10K+ bought',
-        thumbnail:          'https://example.com/img.jpg',
-        thumbnails:         [
+        title: 'Sony WH-1000XM5 Wireless Noise Canceling Headphones',
+        brand: 'Sony',
+        rating: 4.6,
+        reviews: 14_496,
+        bought_last_month: '10K+ bought',
+        thumbnail: 'https://example.com/img.jpg',
+        thumbnails: [
           'https://example.com/img1.jpg',
           'https://example.com/img2.jpg',
           'https://example.com/img3.jpg',
@@ -41,9 +41,9 @@ function buildRawJson(overrides: Record<string, unknown> = {}): Record<string, u
           'https://example.com/img5.jpg',
           'https://example.com/img6.jpg',
         ],
-        prime:    true,
+        prime: true,
         delivery: ['FREE delivery Friday'],
-        stock:    'In Stock',
+        stock: 'In Stock',
         variants: [],
       },
       about_item: [
@@ -54,13 +54,13 @@ function buildRawJson(overrides: Record<string, unknown> = {}): Record<string, u
         'Lightweight at 250g with soft fit leather',
       ],
       product_details: {
-        brand:                  'Sony',
+        brand: 'Sony',
         connectivity_technology: 'Bluetooth, USB',
-        color:                  'Black',
-        item_weight:            '8.81 ounces',
-        battery_average_life:   '30 Hours',
-        model_number:           'WH1000XM5/B',
-        manufacturer:           'Sony Electronics',
+        color: 'Black',
+        item_weight: '8.81 ounces',
+        battery_average_life: '30 Hours',
+        model_number: 'WH1000XM5/B',
+        manufacturer: 'Sony Electronics',
       },
       ...overrides,
     },
@@ -68,18 +68,18 @@ function buildRawJson(overrides: Record<string, unknown> = {}): Record<string, u
 }
 
 function buildSchema(keys: string[], requiredKeys: string[] = []) {
-  return keys.map(k => ({ key: k, required: requiredKeys.includes(k) }))
+  return keys.map((k) => ({ key: k, required: requiredKeys.includes(k) }))
 }
 
 function findIssue(issues: readonly QualityIssue[], code: string): QualityIssue | undefined {
-  return issues.find(i => i.code === code)
+  return issues.find((i) => i.code === code)
 }
 
 // ── Mock NeonService (scoreProduct never calls DB) ────────────────────────────
 
 const mockNeonService = {
-  query:    jest.fn().mockResolvedValue([]),
-  getPool:  jest.fn(),
+  query: jest.fn().mockResolvedValue([]),
+  getPool: jest.fn(),
   isHealthy: jest.fn().mockReturnValue(false),
 }
 
@@ -90,10 +90,7 @@ describe('DataQualityService.scoreProduct()', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        DataQualityService,
-        { provide: NeonService, useValue: mockNeonService },
-      ],
+      providers: [DataQualityService, { provide: NeonService, useValue: mockNeonService }],
     }).compile()
 
     service = module.get<DataQualityService>(DataQualityService)
@@ -148,14 +145,16 @@ describe('DataQualityService.scoreProduct()', () => {
 
     it('emits TITLE_ALL_CAPS for a fully uppercased long title', () => {
       const raw = buildRawJson()
-      ;(raw['data'] as any)['product_results']['title'] = 'SONY WH1000XM5 NOISE CANCELING HEADPHONES BLACK BRAND NEW'
+      ;(raw['data'] as any)['product_results']['title'] =
+        'SONY WH1000XM5 NOISE CANCELING HEADPHONES BLACK BRAND NEW'
       const { issues } = service.scoreProduct(raw, [], 3)
       expect(findIssue(issues, 'TITLE_ALL_CAPS')).toBeDefined()
     })
 
     it('emits TITLE_NO_BRAND when brand is absent from the title', () => {
       const raw = buildRawJson()
-      ;(raw['data'] as any)['product_results']['title'] = 'Wireless Noise Canceling Headphones Premium Quality'
+      ;(raw['data'] as any)['product_results']['title'] =
+        'Wireless Noise Canceling Headphones Premium Quality'
       ;(raw['data'] as any)['product_results']['brand'] = 'HiddenBrand'
       const { issues } = service.scoreProduct(raw, [], 3)
       expect(findIssue(issues, 'TITLE_NO_BRAND')).toBeDefined()
@@ -180,7 +179,7 @@ describe('DataQualityService.scoreProduct()', () => {
   describe('images scoring', () => {
     it('emits NO_IMAGES and returns images score 0 when no images at all', () => {
       const raw = buildRawJson()
-      ;(raw['data'] as any)['product_results']['thumbnail']  = ''
+      ;(raw['data'] as any)['product_results']['thumbnail'] = ''
       ;(raw['data'] as any)['product_results']['thumbnails'] = []
       const { issues, scoreDimensions } = service.scoreProduct(raw, [], 3)
       expect(findIssue(issues, 'NO_IMAGES')).toBeDefined()
@@ -204,8 +203,8 @@ describe('DataQualityService.scoreProduct()', () => {
       const raw = buildRawJson()
       ;(raw['data'] as any)['product_results']['thumbnails'] = [
         'https://real.com/img.jpg',
-        '',                             // empty — should be filtered
-        'not-a-url',                    // invalid — should be filtered
+        '', // empty — should be filtered
+        'not-a-url', // invalid — should be filtered
         'https://real.com/img2.jpg',
       ]
       // Should count 2 valid images → FEW_IMAGES warning
@@ -219,7 +218,7 @@ describe('DataQualityService.scoreProduct()', () => {
   describe('description scoring', () => {
     it('emits NO_DESCRIPTION and returns 0 when about_item and product_description are absent', () => {
       const raw = buildRawJson()
-      ;(raw['data'] as any)['about_item']          = []
+      ;(raw['data'] as any)['about_item'] = []
       ;(raw['data'] as any)['product_description'] = []
       const { issues, scoreDimensions } = service.scoreProduct(raw, [], 3)
       expect(findIssue(issues, 'NO_DESCRIPTION')).toBeDefined()
@@ -228,7 +227,7 @@ describe('DataQualityService.scoreProduct()', () => {
 
     it('emits NO_BULLET_POINTS when about_item is empty but product_description exists', () => {
       const raw = buildRawJson()
-      ;(raw['data'] as any)['about_item']          = []
+      ;(raw['data'] as any)['about_item'] = []
       ;(raw['data'] as any)['product_description'] = [{ title: 'Some description' }]
       const { issues } = service.scoreProduct(raw, [], 3)
       expect(findIssue(issues, 'NO_BULLET_POINTS')).toBeDefined()
@@ -252,7 +251,7 @@ describe('DataQualityService.scoreProduct()', () => {
 
   describe('attributes scoring', () => {
     it('returns attributeCoverage = 100% when all schema keys are present', () => {
-      const raw    = buildRawJson()
+      const raw = buildRawJson()
       // product_details has: brand, connectivity_technology, color, item_weight,
       //                      battery_average_life, model_number, manufacturer
       const schema = buildSchema(
@@ -267,7 +266,7 @@ describe('DataQualityService.scoreProduct()', () => {
     it('emits MISSING_REQUIRED_ATTRS when required attrs are absent', () => {
       const schema = buildSchema(
         ['brand', 'wattage', 'voltage'],
-        ['wattage', 'voltage'],   // required but not in default product_details
+        ['wattage', 'voltage'], // required but not in default product_details
       )
       const { issues, missingAttrs } = service.scoreProduct(buildRawJson(), schema, 3)
       expect(findIssue(issues, 'MISSING_REQUIRED_ATTRS')).toBeDefined()
@@ -283,11 +282,21 @@ describe('DataQualityService.scoreProduct()', () => {
 
     it('emits LOW_ATTRIBUTE_COVERAGE when coverage < 40%', () => {
       // Schema has 10 keys, product has only brand
+      const raw = buildRawJson()
+      ;(raw['data'] as any)['product_details'] = { brand: 'Sony' }
       const schema = buildSchema([
-        'wattage','voltage','amperage','frequency','resistance',
-        'efficiency','flow_rate','pressure','noise_level','merv_rating',
+        'wattage',
+        'voltage',
+        'amperage',
+        'frequency',
+        'resistance',
+        'efficiency',
+        'flow_rate',
+        'pressure',
+        'noise_level',
+        'merv_rating',
       ])
-      const { issues } = service.scoreProduct(buildRawJson(), schema, 3)
+      const { issues } = service.scoreProduct(raw, schema, 3)
       expect(findIssue(issues, 'LOW_ATTRIBUTE_COVERAGE')).toBeDefined()
     })
 
@@ -322,8 +331,8 @@ describe('DataQualityService.scoreProduct()', () => {
           items: [
             { asin: 'B001', name: 'Black', image: '' },
             { asin: 'B002', name: 'White', image: '' },
-            { asin: 'B003', name: 'Red',   image: '' },
-            { asin: 'B004', name: 'Blue',  image: 'https://example.com/blue.jpg' },
+            { asin: 'B003', name: 'Red', image: '' },
+            { asin: 'B004', name: 'Blue', image: 'https://example.com/blue.jpg' },
           ],
         },
       ]
@@ -374,7 +383,7 @@ describe('DataQualityService.scoreProduct()', () => {
     it('returns reviews score > 70 for 1000+ reviews with 4.5+ rating', () => {
       const raw = buildRawJson()
       ;(raw['data'] as any)['product_results']['reviews'] = 12_000
-      ;(raw['data'] as any)['product_results']['rating']  = 4.7
+      ;(raw['data'] as any)['product_results']['rating'] = 4.7
       const { scoreDimensions } = service.scoreProduct(raw, [], 3)
       expect(scoreDimensions.reviews).toBeGreaterThan(70)
     })
@@ -410,7 +419,7 @@ describe('DataQualityService.scoreProduct()', () => {
   describe('issue structure', () => {
     it('every issue has code, severity, and message', () => {
       const raw = buildRawJson()
-      ;(raw['data'] as any)['product_results']['title']     = ''
+      ;(raw['data'] as any)['product_results']['title'] = ''
       ;(raw['data'] as any)['product_results']['thumbnail'] = ''
       ;(raw['data'] as any)['product_results']['thumbnails'] = []
       ;(raw['data'] as any)['about_item'] = []
@@ -428,7 +437,7 @@ describe('DataQualityService.scoreProduct()', () => {
 
     it('no duplicate issue codes for the same product', () => {
       const { issues } = service.scoreProduct(buildRawJson(), [], 3)
-      const codes = issues.map(i => i.code)
+      const codes = issues.map((i) => i.code)
       const unique = new Set(codes)
       // Allow one exception: FEW_IMAGES may appear at most once
       expect(codes.length).toBe(unique.size)
@@ -443,9 +452,7 @@ describe('DataQualityService.scoreProduct()', () => {
     })
 
     it('does not throw when product_results is null', () => {
-      expect(() =>
-        service.scoreProduct({ data: { product_results: null } }, [], 0),
-      ).not.toThrow()
+      expect(() => service.scoreProduct({ data: { product_results: null } }, [], 0)).not.toThrow()
     })
 
     it('does not throw when thumbnails is not an array', () => {
@@ -480,8 +487,8 @@ describe('DataQualityService.scoreProduct()', () => {
     it('total is a weighted combination within 0-100', () => {
       // Verify all combos of extreme scores still produce valid output
       const cases = [
-        buildRawJson(),                                         // rich product
-        {},                                                     // empty
+        buildRawJson(), // rich product
+        {}, // empty
         { data: { product_results: { title: 'T'.repeat(80) } } }, // partial
       ]
       for (const raw of cases) {

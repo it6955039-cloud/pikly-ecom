@@ -1,42 +1,43 @@
 // src/orders/tests/orders.service.spec.ts — PostgreSQL, no Mongoose
-import { Test, TestingModule }   from '@nestjs/testing'
 import { BadRequestException, NotFoundException } from '@nestjs/common'
-import { OrdersService }         from '../orders.service'
-import { DatabaseService }       from '../../database/database.service'
-import { CartService }           from '../../cart/cart.service'
-import { ProductsService }       from '../../products/products.service'
-import { MailService }           from '../../mail/mail.service'
-import { RedisService }          from '../../redis/redis.service'
-import { WebhookService }        from '../../webhooks/webhook.service'
+import { ConfigService } from '@nestjs/config'
+import { Test, TestingModule } from '@nestjs/testing'
+import { CartService } from '../../cart/cart.service'
+import { DatabaseService } from '../../database/database.service'
+import { MailService } from '../../mail/mail.service'
+import { ProductsService } from '../../products/products.service'
+import { RedisService } from '../../redis/redis.service'
+import { WebhookService } from '../../webhooks/webhook.service'
+import { OrdersService } from '../orders.service'
 
-const USER_ID    = 'aaaaaaaa-0000-0000-0000-000000000001'
+const USER_ID = 'aaaaaaaa-0000-0000-0000-000000000001'
 const SESSION_ID = 'sess-abc-123'
-const ORDER_ID   = 'ORD-001000'
+const ORDER_ID = 'ORD-001000'
 
 function makeDatabaseService() {
   return {
-    query:    jest.fn().mockResolvedValue([]),
+    query: jest.fn().mockResolvedValue([]),
     queryOne: jest.fn().mockResolvedValue(null),
-    execute:  jest.fn().mockResolvedValue(1),
-    transaction: jest.fn().mockImplementation(async (fn: any) =>
-      fn({ query: jest.fn().mockResolvedValue({ rows: [] }) }),
-    ),
+    execute: jest.fn().mockResolvedValue(1),
+    transaction: jest
+      .fn()
+      .mockImplementation(async (fn: any) =>
+        fn({ query: jest.fn().mockResolvedValue({ rows: [] }) }),
+      ),
   }
 }
 
 const mockCartWithItems = {
   session_id: SESSION_ID,
   user_id: USER_ID,
-  items: [
-    { asin: 'B001', title: 'Widget', price: 29.99, quantity: 2, subtotal: 59.98 },
-  ],
+  items: [{ asin: 'B001', title: 'Widget', price: 29.99, quantity: 2, subtotal: 59.98 }],
   coupon: null,
   summary: { subtotal: 59.98, shipping: 0, tax: 5.99, discount: 0, total: 65.97 },
 }
 
 describe('OrdersService', () => {
   let service: OrdersService
-  let db:      ReturnType<typeof makeDatabaseService>
+  let db: ReturnType<typeof makeDatabaseService>
   let cartService: any
   let productsService: any
   let mailService: any
@@ -48,7 +49,7 @@ describe('OrdersService', () => {
 
     cartService = {
       getCartByUser: jest.fn().mockResolvedValue(mockCartWithItems),
-      clearCart:     jest.fn().mockResolvedValue({ cleared: true }),
+      clearCart: jest.fn().mockResolvedValue({ cleared: true }),
     }
 
     productsService = {
@@ -56,7 +57,7 @@ describe('OrdersService', () => {
     }
 
     mailService = {
-      sendOrderConfirmation:   jest.fn().mockResolvedValue(undefined),
+      sendOrderConfirmation: jest.fn().mockResolvedValue(undefined),
       sendShippingNotification: jest.fn().mockResolvedValue(undefined),
     }
 
@@ -65,7 +66,7 @@ describe('OrdersService', () => {
     }
 
     redis = {
-      del:               jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
       getIdempotencyKey: jest.fn().mockResolvedValue(null),
       setIdempotencyKey: jest.fn().mockResolvedValue(undefined),
     }
@@ -74,11 +75,12 @@ describe('OrdersService', () => {
       providers: [
         OrdersService,
         { provide: DatabaseService, useValue: db },
-        { provide: CartService,     useValue: cartService },
+        { provide: CartService, useValue: cartService },
         { provide: ProductsService, useValue: productsService },
-        { provide: MailService,     useValue: mailService },
-        { provide: RedisService,    useValue: redis },
-        { provide: WebhookService,  useValue: webhookService },
+        { provide: MailService, useValue: mailService },
+        { provide: RedisService, useValue: redis },
+        { provide: WebhookService, useValue: webhookService },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile()
 
@@ -105,7 +107,7 @@ describe('OrdersService', () => {
     it('creates an order and clears the cart on success', async () => {
       // nextOrderId sequence
       db.queryOne
-        .mockResolvedValueOnce({ nextval: '1001' })        // nextOrderId
+        .mockResolvedValueOnce({ nextval: '1001' }) // nextOrderId
         .mockResolvedValueOnce({ email: 'a@b.com', first_name: 'Alice' }) // user lookup
         .mockResolvedValueOnce({ order_id: ORDER_ID, user_id: USER_ID, status: 'pending' }) // INSERT RETURNING
 
@@ -152,19 +154,26 @@ describe('OrdersService', () => {
 
   describe('updateStatus', () => {
     const existingOrder = {
-      order_id: ORDER_ID, user_id: USER_ID,
-      status: 'processing', payment_method: 'card',
-      payment_status: 'pending', shipping_email_sent: false,
-      timeline: [], pricing: { total: 89.99 },
+      order_id: ORDER_ID,
+      user_id: USER_ID,
+      status: 'processing',
+      payment_method: 'card',
+      payment_status: 'pending',
+      shipping_email_sent: false,
+      timeline: [],
+      pricing: { total: 89.99 },
     }
 
     it('appends new status to timeline', async () => {
       db.queryOne
-        .mockResolvedValueOnce(existingOrder)  // SELECT
+        .mockResolvedValueOnce(existingOrder) // SELECT
         .mockResolvedValueOnce({ ...existingOrder, status: 'shipped' }) // UPDATE RETURNING
 
       const result = await service.updateStatus(ORDER_ID, 'shipped')
-      expect(webhookService.dispatch).toHaveBeenCalledWith('order.status_changed', expect.any(Object))
+      expect(webhookService.dispatch).toHaveBeenCalledWith(
+        'order.status_changed',
+        expect.any(Object),
+      )
     })
 
     it('throws ORDER_NOT_FOUND for missing order', async () => {

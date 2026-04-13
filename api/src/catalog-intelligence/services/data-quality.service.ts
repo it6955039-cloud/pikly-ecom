@@ -6,25 +6,45 @@
 // intentionally, so quality scoring can run independently.
 
 import { Injectable, Logger } from '@nestjs/common'
-import { NeonService }        from './neon.service'
 import type {
-  BatchCursor, EnrichmentJobResult, ParsedProductDetails, ProductQualityScore, QualityIssue,
+  BatchCursor,
+  EnrichmentJobResult,
+  ProductQualityScore,
+  QualityIssue,
 } from '../types/cil.types'
+import { NeonService } from './neon.service'
 
 const DIMENSION_WEIGHTS = {
-  title:       0.25, images:      0.20, description: 0.15,
-  attributes:  0.20, variants:    0.10, reviews:     0.05, taxonomy:    0.05,
+  title: 0.25,
+  images: 0.2,
+  description: 0.15,
+  attributes: 0.2,
+  variants: 0.1,
+  reviews: 0.05,
+  taxonomy: 0.05,
 } as const
 
 const ISSUE = {
-  TITLE_TOO_SHORT:'TITLE_TOO_SHORT', TITLE_TOO_LONG:'TITLE_TOO_LONG',
-  TITLE_ALL_CAPS: 'TITLE_ALL_CAPS',  TITLE_NO_BRAND:'TITLE_NO_BRAND',
-  NO_IMAGES:      'NO_IMAGES',       NO_MAIN_IMAGE: 'NO_MAIN_IMAGE',
-  FEW_IMAGES:     'FEW_IMAGES',      NO_DESCRIPTION:'NO_DESCRIPTION',
-  SHORT_DESC:     'SHORT_DESCRIPTION', LOW_ATTR_COV: 'LOW_ATTR_COVERAGE',
-  NO_VARIANTS:    'NO_VARIANTS',     FEW_REVIEWS:   'FEW_REVIEWS',
-  LOW_RATING:     'LOW_RATING',      NO_TAXONOMY:   'NO_TAXONOMY',
-  SHALLOW_TAX:    'SHALLOW_TAXONOMY',
+  TITLE_TOO_SHORT: 'TITLE_TOO_SHORT',
+  TITLE_TOO_LONG: 'TITLE_TOO_LONG',
+  TITLE_ALL_CAPS: 'TITLE_ALL_CAPS',
+  TITLE_NO_BRAND: 'TITLE_NO_BRAND',
+  NO_IMAGES: 'NO_IMAGES',
+  NO_MAIN_IMAGE: 'NO_MAIN_IMAGE',
+  FEW_IMAGES: 'FEW_IMAGES',
+  NO_DESCRIPTION: 'NO_DESCRIPTION',
+  NO_BULLET_POINTS: 'NO_BULLET_POINTS',
+  FEW_BULLET_POINTS: 'FEW_BULLET_POINTS',
+  SHORT_DESC: 'SHORT_DESCRIPTION',
+  LOW_ATTRIBUTE_COVERAGE: 'LOW_ATTRIBUTE_COVERAGE',
+  MISSING_REQUIRED_ATTRS: 'MISSING_REQUIRED_ATTRS',
+  NO_VARIANTS: 'NO_VARIANTS',
+  VARIANT_IMAGES_MISSING: 'VARIANT_IMAGES_MISSING',
+  NO_REVIEWS: 'NO_REVIEWS',
+  LOW_REVIEW_COUNT: 'LOW_REVIEW_COUNT',
+  LOW_RATING: 'LOW_RATING',
+  NO_TAXONOMY: 'NO_TAXONOMY',
+  SHALLOW_TAX: 'SHALLOW_TAXONOMY',
 } as const
 
 @Injectable()
@@ -35,54 +55,71 @@ export class DataQualityService {
   // ── Public sync scorer (no DB) ────────────────────────────────────────────
 
   scoreProduct(
-    rawJson:       Record<string, unknown>,
-    familySchema:  { key: string; required: boolean }[] = [],
+    rawJson: Record<string, unknown>,
+    familySchema: { key: string; required: boolean }[] = [],
     taxonomyDepth: number = 1,
   ): Omit<ProductQualityScore, 'asin' | 'productId' | 'scoredAt' | 'needsRescore'> {
     const issues: QualityIssue[] = []
     const data = (rawJson['data'] ?? rawJson) as Record<string, unknown>
-    const pr   = (data['product_results'] ?? {}) as Record<string, unknown>
-    const pd   = (data['product_details']  ?? {}) as Record<string, unknown>
+    const pr = (data['product_results'] ?? {}) as Record<string, unknown>
+    const pd = (data['product_details'] ?? {}) as Record<string, unknown>
 
-    const titleScore   = this.scoreTitle(pr, issues)
-    const imagesScore  = this.scoreImages(pr, issues)
-    const descScore    = this.scoreDescription(data, issues)
-    const { score: attrsScore, missingAttrs, presentAttrs, coverage } =
-      this.scoreAttributes(pd, familySchema, issues)
+    const titleScore = this.scoreTitle(pr, issues)
+    const imagesScore = this.scoreImages(pr, issues)
+    const descScore = this.scoreDescription(data, issues)
+    const {
+      score: attrsScore,
+      missingAttrs,
+      presentAttrs,
+      coverage,
+    } = this.scoreAttributes(pd, familySchema, issues)
     const variantsScore = this.scoreVariants(pr, issues)
-    const reviewsScore  = this.scoreReviews(pr, issues)
+    const reviewsScore = this.scoreReviews(pr, issues)
     const taxonomyScore = this.scoreTaxonomy(taxonomyDepth, issues)
 
     const overall = Math.round(
-      titleScore    * DIMENSION_WEIGHTS.title       +
-      imagesScore   * DIMENSION_WEIGHTS.images      +
-      descScore     * DIMENSION_WEIGHTS.description +
-      attrsScore    * DIMENSION_WEIGHTS.attributes  +
-      variantsScore * DIMENSION_WEIGHTS.variants    +
-      reviewsScore  * DIMENSION_WEIGHTS.reviews     +
-      taxonomyScore * DIMENSION_WEIGHTS.taxonomy,
+      titleScore * DIMENSION_WEIGHTS.title +
+        imagesScore * DIMENSION_WEIGHTS.images +
+        descScore * DIMENSION_WEIGHTS.description +
+        attrsScore * DIMENSION_WEIGHTS.attributes +
+        variantsScore * DIMENSION_WEIGHTS.variants +
+        reviewsScore * DIMENSION_WEIGHTS.reviews +
+        taxonomyScore * DIMENSION_WEIGHTS.taxonomy,
     )
 
     return {
-      qualityScore:    Math.max(0, Math.min(100, overall)),
-      scoreDimensions: { title: titleScore, images: imagesScore, description: descScore,
-        attributes: attrsScore, variants: variantsScore, reviews: reviewsScore, taxonomy: taxonomyScore },
-      issues, missingAttrs, presentAttrs, attributeCoverage: coverage,
+      qualityScore: Math.max(0, Math.min(100, overall)),
+      scoreDimensions: {
+        title: titleScore,
+        images: imagesScore,
+        description: descScore,
+        attributes: attrsScore,
+        variants: variantsScore,
+        reviews: reviewsScore,
+        taxonomy: taxonomyScore,
+      },
+      issues,
+      missingAttrs,
+      presentAttrs,
+      attributeCoverage: coverage,
     }
   }
 
   // ── Batch scoring pipeline ────────────────────────────────────────────────
 
   async runBatchScoring(cursor: BatchCursor): Promise<EnrichmentJobResult> {
-    const pool      = this.neon.getPool()
-    const jobId     = cursor.jobId
+    const pool = this.neon.getPool()
+    const jobId = cursor.jobId
     const batchSize = Math.max(1, Math.min(cursor.batchSize, 200))
 
     // Load family schemas keyed by LTREE path (text representation)
     const familySchemas = await this.loadFamilySchemas()
 
-    let lastAsin  = cursor.lastAsin
-    let processed = 0, failed = 0, skipped = 0, keepGoing = true
+    let lastAsin = cursor.lastAsin
+    let processed = 0,
+      failed = 0,
+      skipped = 0,
+      keepGoing = true
 
     await this.markJobRunning(pool, jobId)
 
@@ -91,12 +128,12 @@ export class DataQualityService {
         // Join store.products with catalog.products to get LTREE taxonomy_path.
         // catalog.products is auto-synced from store.products via DB trigger.
         const batch = await pool.query<{
-          asin:           string
-          taxonomy_path:  string | null   // LTREE returned as text
+          asin: string
+          taxonomy_path: string | null // LTREE returned as text
           taxonomy_depth: number
-          pr_json:        Record<string, unknown>
-          pd_json:        Record<string, unknown>
-          thumbnails_ct:  number
+          pr_json: Record<string, unknown>
+          pd_json: Record<string, unknown>
+          thumbnails_ct: number
         }>(
           `SELECT sp.asin,
                   cp.taxonomy_path::text               AS taxonomy_path,
@@ -113,19 +150,22 @@ export class DataQualityService {
           [lastAsin, batchSize],
         )
 
-        if (!batch.rowCount || batch.rows.length === 0) { keepGoing = false; break }
+        if (!batch.rowCount || batch.rows.length === 0) {
+          keepGoing = false
+          break
+        }
 
         for (const row of batch.rows) {
           try {
-            const taxPath  = row.taxonomy_path ?? ''
-            const depth    = row.taxonomy_depth ?? 1
-            const schema   = familySchemas.get(taxPath) ?? []
+            const taxPath = row.taxonomy_path ?? ''
+            const depth = row.taxonomy_depth ?? 1
+            const schema = familySchemas.get(taxPath) ?? []
 
             // Build raw_json shape scoreProduct() expects
             const prJson = row.pr_json ?? {}
             // Inject DB thumbnail count (more accurate than JSONB field)
             if (row.thumbnails_ct > 0) {
-              (prJson as any)['_thumbnails_count'] = row.thumbnails_ct
+              ;(prJson as any)['_thumbnails_count'] = row.thumbnails_ct
             }
 
             const rawJson: Record<string, unknown> = {
@@ -154,19 +194,29 @@ export class DataQualityService {
                  pipeline_version=EXCLUDED.pipeline_version, scored_at=EXCLUDED.scored_at,
                  needs_rescore=false, updated_at=NOW()`,
               [
-                row.asin, sr.qualityScore,
-                sr.scoreDimensions.title, sr.scoreDimensions.images,
-                sr.scoreDimensions.description, sr.scoreDimensions.attributes,
-                sr.scoreDimensions.variants, sr.scoreDimensions.reviews,
+                row.asin,
+                sr.qualityScore,
+                sr.scoreDimensions.title,
+                sr.scoreDimensions.images,
+                sr.scoreDimensions.description,
+                sr.scoreDimensions.attributes,
+                sr.scoreDimensions.variants,
+                sr.scoreDimensions.reviews,
                 sr.scoreDimensions.taxonomy,
-                JSON.stringify(sr.issues), sr.missingAttrs, sr.presentAttrs, sr.attributeCoverage,
+                JSON.stringify(sr.issues),
+                sr.missingAttrs,
+                sr.presentAttrs,
+                sr.attributeCoverage,
               ],
             )
 
-            processed++; lastAsin = row.asin
+            processed++
+            lastAsin = row.asin
           } catch (err) {
             failed++
-            this.logger.warn(`Quality score failed ASIN=${row.asin}: ${err instanceof Error ? err.message : String(err)}`)
+            this.logger.warn(
+              `Quality score failed ASIN=${row.asin}: ${err instanceof Error ? err.message : String(err)}`,
+            )
           }
         }
 
@@ -175,7 +225,9 @@ export class DataQualityService {
           [processed, failed, lastAsin, jobId],
         )
 
-        if (batch.rows.length < batchSize) { keepGoing = false }
+        if (batch.rows.length < batchSize) {
+          keepGoing = false
+        }
       }
     } catch (err) {
       await this.markJobFailed(pool, jobId, err instanceof Error ? err.message : String(err))
@@ -186,11 +238,17 @@ export class DataQualityService {
     await this.markJobCompleted(pool, jobId, processed, failed, total)
 
     return {
-      jobId, jobType: 'quality_scoring', status: 'completed',
-      processedItems: processed, failedItems: failed, skippedItems: skipped, totalItems: total,
+      jobId,
+      jobType: 'quality_scoring',
+      status: 'completed',
+      processedItems: processed,
+      failedItems: failed,
+      skippedItems: skipped,
+      totalItems: total,
       lastProcessedAsin: lastAsin,
       results: { avgScoreUpdate: 'see cil.product_quality' },
-      startedAt: null, completedAt: new Date(),
+      startedAt: null,
+      completedAt: new Date(),
     }
   }
 
@@ -201,72 +259,281 @@ export class DataQualityService {
     const brand = typeof pr['brand'] === 'string' ? pr['brand'].trim() : ''
     if (!title) return 0
     let s = 100
-    if (title.length < 30)  { s -= 40; issues.push({ code: ISSUE.TITLE_TOO_SHORT, severity:'critical', message:`Title is ${title.length} chars (min 30)`, field:'title' }) }
-    else if (title.length < 60)  { s -= 20 }
-    else if (title.length > 250) { s -= 15; issues.push({ code: ISSUE.TITLE_TOO_LONG, severity:'warning', message:`Title is ${title.length} chars (max 250)`, field:'title' }) }
+    if (title.length < 30) {
+      s -= 40
+      issues.push({
+        code: ISSUE.TITLE_TOO_SHORT,
+        severity: 'critical',
+        message: `Title is ${title.length} chars (min 30)`,
+        field: 'title',
+      })
+    } else if (title.length < 60) {
+      s -= 20
+    } else if (title.length > 250) {
+      s -= 15
+      issues.push({
+        code: ISSUE.TITLE_TOO_LONG,
+        severity: 'warning',
+        message: `Title is ${title.length} chars (max 250)`,
+        field: 'title',
+      })
+    }
     const upperRatio = (title.match(/[A-Z]/g)?.length ?? 0) / title.length
-    if (upperRatio > 0.6 && title.length > 20) { s -= 20; issues.push({ code: ISSUE.TITLE_ALL_CAPS, severity:'warning', message:'Title appears to be ALL CAPS', field:'title' }) }
-    if (brand && !title.toLowerCase().includes(brand.toLowerCase())) { s -= 10; issues.push({ code: ISSUE.TITLE_NO_BRAND, severity:'info', message:'Brand not mentioned in title', field:'title' }) }
+    if (upperRatio > 0.6 && title.length > 20) {
+      s -= 20
+      issues.push({
+        code: ISSUE.TITLE_ALL_CAPS,
+        severity: 'warning',
+        message: 'Title appears to be ALL CAPS',
+        field: 'title',
+      })
+    }
+    if (brand && !title.toLowerCase().includes(brand.toLowerCase())) {
+      s -= 10
+      issues.push({
+        code: ISSUE.TITLE_NO_BRAND,
+        severity: 'info',
+        message: 'Brand not mentioned in title',
+        field: 'title',
+      })
+    }
     return Math.max(0, s)
   }
 
   private scoreImages(pr: Record<string, unknown>, issues: QualityIssue[]): number {
     const thumb = typeof pr['thumbnail'] === 'string' ? pr['thumbnail'] : ''
-    const count = (pr['_thumbnails_count'] as number) ||
-      (Array.isArray(pr['thumbnails']) ? (pr['thumbnails'] as string[]).filter(t => t.startsWith('http')).length : 0)
-    if (!thumb && count === 0) { issues.push({ code: ISSUE.NO_IMAGES, severity:'critical', message:'No images', field:'thumbnail' }); return 0 }
-    if (!thumb) issues.push({ code: ISSUE.NO_MAIN_IMAGE, severity:'critical', message:'No main thumbnail', field:'thumbnail' })
+    const count =
+      (pr['_thumbnails_count'] as number) ||
+      (Array.isArray(pr['thumbnails'])
+        ? (pr['thumbnails'] as string[]).filter((t) => t.startsWith('http')).length
+        : 0)
+    if (!thumb && count === 0) {
+      issues.push({
+        code: ISSUE.NO_IMAGES,
+        severity: 'critical',
+        message: 'No images',
+        field: 'thumbnail',
+      })
+      return 0
+    }
+    if (!thumb)
+      issues.push({
+        code: ISSUE.NO_MAIN_IMAGE,
+        severity: 'critical',
+        message: 'No main thumbnail',
+        field: 'thumbnail',
+      })
     let s = 100
-    if (count === 0) { s = 10 }
-    else if (count === 1) { s -= 40; issues.push({ code: ISSUE.FEW_IMAGES, severity:'warning', message:'Only 1 image (6+ recommended)', field:'thumbnails' }) }
-    else if (count < 4)  { s -= 20; issues.push({ code: ISSUE.FEW_IMAGES, severity:'warning', message:`Only ${count} images`, field:'thumbnails' }) }
-    else if (count < 6)  { s -= 10 }
+    if (count === 0) {
+      s = 10
+    } else if (count === 1) {
+      s -= 40
+      issues.push({
+        code: ISSUE.FEW_IMAGES,
+        severity: 'warning',
+        message: 'Only 1 image (6+ recommended)',
+        field: 'thumbnails',
+      })
+    } else if (count < 4) {
+      s -= 20
+      issues.push({
+        code: ISSUE.FEW_IMAGES,
+        severity: 'warning',
+        message: `Only ${count} images`,
+        field: 'thumbnails',
+      })
+    } else if (count < 6) {
+      s -= 10
+    }
     return Math.max(0, s)
   }
 
   private scoreDescription(data: Record<string, unknown>, issues: QualityIssue[]): number {
-    const about = Array.isArray(data['about_item']) ? data['about_item'] as unknown[] : []
-    if (about.length === 0) { issues.push({ code: ISSUE.NO_DESCRIPTION, severity:'critical', message:'No description bullets', field:'about_item' }); return 0 }
+    const about = Array.isArray(data['about_item']) ? (data['about_item'] as unknown[]) : []
+    const desc = Array.isArray(data['product_description'])
+      ? (data['product_description'] as unknown[])
+      : []
+    const hasBullets = about.length > 0
+    const hasDesc = desc.length > 0
+    if (!hasBullets && !hasDesc) {
+      issues.push({
+        code: ISSUE.NO_DESCRIPTION,
+        severity: 'critical',
+        message: 'No description bullets or product description',
+        field: 'about_item',
+      })
+      return 0
+    }
+    if (!hasBullets && hasDesc) {
+      issues.push({
+        code: ISSUE.NO_BULLET_POINTS,
+        severity: 'warning',
+        message: 'No bullet points, but product description exists',
+        field: 'about_item',
+      })
+      return 50
+    }
     let s = 100
-    if (about.length < 3)  { s -= 30; issues.push({ code: ISSUE.SHORT_DESC, severity:'warning', message:`Only ${about.length} bullet(s)`, field:'about_item' }) }
-    else if (about.length < 5) { s -= 15 }
+    if (about.length < 5) {
+      s -= 15
+      issues.push({
+        code: ISSUE.FEW_BULLET_POINTS,
+        severity: 'info',
+        message: `Only ${about.length} bullet points`,
+        field: 'about_item',
+      })
+    }
     return Math.max(0, s)
   }
 
   private scoreAttributes(
-    pd: Record<string, unknown>, familySchema: { key: string; required: boolean }[], issues: QualityIssue[],
+    pd: Record<string, unknown>,
+    familySchema: { key: string; required: boolean }[],
+    issues: QualityIssue[],
   ): { score: number; missingAttrs: string[]; presentAttrs: string[]; coverage: number } {
-    const presentAttrs = Object.keys(pd).filter(k => pd[k] !== null && pd[k] !== undefined && pd[k] !== '')
-    if (familySchema.length === 0) return { score: presentAttrs.length > 0 ? 70 : 40, missingAttrs:[], presentAttrs, coverage:0 }
-    const presentSet   = new Set(presentAttrs)
-    const required     = familySchema.filter(s => s.required)
-    const missingAttrs = required.filter(s => !presentSet.has(s.key)).map(s => s.key)
-    const coverage     = Math.round((presentAttrs.filter(k => familySchema.some(s => s.key === k)).length / familySchema.length) * 100)
+    const presentAttrs = Object.keys(pd).filter(
+      (k) => pd[k] !== null && pd[k] !== undefined && pd[k] !== '',
+    )
+    if (familySchema.length === 0)
+      return {
+        score: presentAttrs.length > 0 ? 70 : 40,
+        missingAttrs: [],
+        presentAttrs,
+        coverage: 0,
+      }
+    const presentSet = new Set(presentAttrs)
+    const required = familySchema.filter((s) => s.required)
+    const missingAttrs = required.filter((s) => !presentSet.has(s.key)).map((s) => s.key)
+    const coverage = Math.round(
+      (presentAttrs.filter((k) => familySchema.some((s) => s.key === k)).length /
+        familySchema.length) *
+        100,
+    )
     let s = 100
-    if (missingAttrs.length > 0) { s -= Math.min(60, missingAttrs.length * 10); issues.push({ code: ISSUE.LOW_ATTR_COV, severity:'warning', message:`Missing ${missingAttrs.length} required attributes`, field:'product_details' }) }
-    if (coverage < 40) s -= 20
+    if (missingAttrs.length > 0) {
+      issues.push({
+        code: ISSUE.MISSING_REQUIRED_ATTRS,
+        severity: 'warning',
+        message: `Missing ${missingAttrs.length} required attributes`,
+        field: 'product_details',
+      })
+      s = Math.min(s, 60) // cap at 60 when required attrs missing
+    }
+    if (coverage < 40) {
+      s -= 20
+      issues.push({
+        code: ISSUE.LOW_ATTRIBUTE_COVERAGE,
+        severity: 'warning',
+        message: `Low attribute coverage: ${coverage}%`,
+        field: 'product_details',
+      })
+    }
     return { score: Math.max(0, s), missingAttrs, presentAttrs, coverage }
   }
 
   private scoreVariants(pr: Record<string, unknown>, issues: QualityIssue[]): number {
-    const v = Array.isArray(pr['variants']) ? pr['variants'] as unknown[] : []
-    if (v.length === 0) { issues.push({ code: ISSUE.NO_VARIANTS, severity:'info', message:'No variants found', field:'variants' }); return 50 }
+    const v = Array.isArray(pr['variants']) ? (pr['variants'] as unknown[]) : []
+    if (v.length === 0) {
+      issues.push({
+        code: ISSUE.NO_VARIANTS,
+        severity: 'info',
+        message: 'No variants found',
+        field: 'variants',
+      })
+      return 70
+    }
+    // Check if at least 30% of variant items have images
+    let totalItems = 0
+    let itemsWithImages = 0
+    for (const group of v) {
+      if (
+        typeof group === 'object' &&
+        group !== null &&
+        'items' in group &&
+        Array.isArray((group as any).items)
+      ) {
+        for (const item of (group as any).items) {
+          if (typeof item === 'object' && item !== null) {
+            totalItems++
+            if (
+              'image' in item &&
+              typeof (item as any).image === 'string' &&
+              (item as any).image.trim() !== ''
+            ) {
+              itemsWithImages++
+            }
+          }
+        }
+      }
+    }
+    if (totalItems > 0 && itemsWithImages / totalItems < 0.3) {
+      issues.push({
+        code: ISSUE.VARIANT_IMAGES_MISSING,
+        severity: 'warning',
+        message: `Only ${itemsWithImages}/${totalItems} variant items have images`,
+        field: 'variants',
+      })
+    }
     return 100
   }
 
   private scoreReviews(pr: Record<string, unknown>, issues: QualityIssue[]): number {
-    const count  = Number(pr['reviews'] ?? 0)
-    const rating = Number(pr['rating']  ?? 0)
+    const count = Number(pr['reviews'] ?? 0)
+    const rating = Number(pr['rating'] ?? 0)
     let s = 100
-    if (count < 10)  { s -= 50; issues.push({ code: ISSUE.FEW_REVIEWS, severity:'warning', message:`Only ${count} reviews`, field:'reviews' }) }
-    else if (count < 50) { s -= 25 }
-    if (rating > 0 && rating < 3.5) { s -= 30; issues.push({ code: ISSUE.LOW_RATING, severity:'warning', message:`Low rating: ${rating}`, field:'rating' }) }
+    if (count === 0) {
+      issues.push({
+        code: ISSUE.NO_REVIEWS,
+        severity: 'info',
+        message: 'No reviews',
+        field: 'reviews',
+      })
+      return 20
+    }
+    if (count < 10) {
+      s -= 50
+      issues.push({
+        code: ISSUE.LOW_REVIEW_COUNT,
+        severity: 'warning',
+        message: `Only ${count} reviews`,
+        field: 'reviews',
+      })
+    } else if (count < 50) {
+      s -= 25
+    }
+    if (rating > 0 && rating < 3.5) {
+      s -= 30
+      issues.push({
+        code: ISSUE.LOW_RATING,
+        severity: 'warning',
+        message: `Low rating: ${rating}`,
+        field: 'rating',
+      })
+    }
     return Math.max(0, s)
   }
 
   private scoreTaxonomy(depth: number, issues: QualityIssue[]): number {
-    if (depth === 0) { issues.push({ code: ISSUE.NO_TAXONOMY, severity:'critical', message:'No taxonomy', field:'taxonomy' }); return 0 }
-    if (depth === 1) { issues.push({ code: ISSUE.SHALLOW_TAX, severity:'warning', message:'No subcategory', field:'taxonomy' }); return 60 }
+    if (depth === 0) {
+      issues.push({
+        code: ISSUE.NO_TAXONOMY,
+        severity: 'critical',
+        message: 'No taxonomy',
+        field: 'taxonomy',
+      })
+      return 0
+    }
+    if (depth < 2) {
+      issues.push({
+        code: ISSUE.SHALLOW_TAX,
+        severity: 'warning',
+        message: 'Shallow taxonomy',
+        field: 'taxonomy',
+      })
+      return 30
+    }
+    if (depth === 2) return 50
+    if (depth === 3) return 75
     return 100
   }
 
@@ -278,25 +545,41 @@ export class DataQualityService {
     )
     const map = new Map<string, { key: string; required: boolean }[]>()
     for (const row of rows) {
-      const schema = Array.isArray(row.attribute_schema) ? row.attribute_schema as { key: string; required: boolean }[] : []
+      const schema = Array.isArray(row.attribute_schema)
+        ? (row.attribute_schema as { key: string; required: boolean }[])
+        : []
       map.set(row.taxonomy_path, schema)
     }
     return map
   }
 
   private async markJobRunning(pool: any, jobId: string): Promise<void> {
-    await pool.query(`UPDATE cil.enrichment_jobs SET status='running', started_at=NOW() WHERE id=$1`, [jobId]).catch(() => void 0)
+    await pool
+      .query(`UPDATE cil.enrichment_jobs SET status='running', started_at=NOW() WHERE id=$1`, [
+        jobId,
+      ])
+      .catch(() => void 0)
   }
-  private async markJobCompleted(pool: any, jobId: string, p: number, f: number, t: number): Promise<void> {
-    await pool.query(
-      `UPDATE cil.enrichment_jobs SET status='completed', completed_at=NOW(), processed_items=$2, failed_items=$3, total_items=$4 WHERE id=$1`,
-      [jobId, p, f, t],
-    ).catch((err: Error) => this.logger.warn(`markJobCompleted failed: ${err.message}`))
+  private async markJobCompleted(
+    pool: any,
+    jobId: string,
+    p: number,
+    f: number,
+    t: number,
+  ): Promise<void> {
+    await pool
+      .query(
+        `UPDATE cil.enrichment_jobs SET status='completed', completed_at=NOW(), processed_items=$2, failed_items=$3, total_items=$4 WHERE id=$1`,
+        [jobId, p, f, t],
+      )
+      .catch((err: Error) => this.logger.warn(`markJobCompleted failed: ${err.message}`))
   }
   private async markJobFailed(pool: any, jobId: string, error: string): Promise<void> {
-    await pool.query(
-      `UPDATE cil.enrichment_jobs SET status='failed', error_message=$2, completed_at=NOW() WHERE id=$1`,
-      [jobId, error.slice(0, 1000)],
-    ).catch(() => void 0)
+    await pool
+      .query(
+        `UPDATE cil.enrichment_jobs SET status='failed', error_message=$2, completed_at=NOW() WHERE id=$1`,
+        [jobId, error.slice(0, 1000)],
+      )
+      .catch(() => void 0)
   }
 }

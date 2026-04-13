@@ -1,44 +1,51 @@
 // src/auth/auth.service.ts — PostgreSQL, no Mongoose
 import {
-  Injectable, BadRequestException, UnauthorizedException,
-  NotFoundException, Logger,
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common'
-import { JwtService }    from '@nestjs/jwt'
 import { ConfigService } from '@nestjs/config'
-import * as bcrypt       from 'bcrypt'
-import * as crypto       from 'crypto'
+import { JwtService } from '@nestjs/jwt'
+import * as bcrypt from 'bcrypt'
+import * as crypto from 'crypto'
 import { DatabaseService } from '../database/database.service'
-import { MailService }   from '../mail/mail.service'
-import { RedisService }  from '../redis/redis.service'
+import { MailService } from '../mail/mail.service'
+import { RedisService } from '../redis/redis.service'
 import {
-  RegisterDto, LoginDto, ForgotPasswordDto,
-  ResetPasswordDto, VerifyEmailDto, ChangePasswordDto,
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  LoginDto,
+  RegisterDto,
+  ResetPasswordDto,
+  VerifyEmailDto,
 } from './dto/auth.dto'
 
 // Maximum failed login attempts before a temporary lockout.
 const MAX_LOGIN_FAILURES = 10
-const BCRYPT_ROUNDS      = 12
+const BCRYPT_ROUNDS = 12
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name)
 
   constructor(
-    private readonly db:     DatabaseService,
-    private readonly jwt:    JwtService,
+    private readonly db: DatabaseService,
+    private readonly jwt: JwtService,
     private readonly config: ConfigService,
-    private readonly mail:   MailService,
-    private readonly redis:  RedisService,
+    private readonly mail: MailService,
+    private readonly redis: RedisService,
   ) {}
 
   // ── Registration ─────────────────────────────────────────────────────────
 
   async register(dto: RegisterDto) {
-    const existing = await this.db.queryOne(
-      'SELECT id FROM store.users WHERE email = $1',
-      [dto.email.toLowerCase()],
-    )
-    if (existing) throw new BadRequestException({ code: 'EMAIL_IN_USE', message: 'Email already registered' })
+    const existing = await this.db.queryOne('SELECT id FROM store.users WHERE email = $1', [
+      dto.email.toLowerCase(),
+    ])
+    if (existing)
+      throw new BadRequestException({ code: 'EMAIL_IN_USE', message: 'Email already registered' })
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS)
     const user = await this.db.queryOne<{ id: string; email: string; first_name: string }>(
@@ -50,7 +57,7 @@ export class AuthService {
     if (!user) throw new BadRequestException('Registration failed')
 
     await this.sendVerificationEmail(user.id, user.email, user.first_name)
-    return { message: 'Registration successful. Check your email to verify your account.' }
+    return { message: 'Registration successful. Check your email for verification instructions.' }
   }
 
   // ── Login ─────────────────────────────────────────────────────────────────
@@ -62,7 +69,7 @@ export class AuthService {
     const failures = await this.redis.getLoginFailures(emailKey)
     if (failures >= MAX_LOGIN_FAILURES) {
       throw new UnauthorizedException({
-        code:    'ACCOUNT_LOCKED',
+        code: 'ACCOUNT_LOCKED',
         message: `Too many failed attempts. Try again in 15 minutes.`,
       })
     }
@@ -77,14 +84,17 @@ export class AuthService {
     // Constant-time failure path: do not reveal whether the email exists
     if (!user) {
       await this.redis.incrementLoginFailure(emailKey)
-      throw new UnauthorizedException({ code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' })
+      throw new UnauthorizedException({
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid email or password',
+      })
     }
     if (!user.is_active) {
       throw new UnauthorizedException({ code: 'ACCOUNT_DISABLED', message: 'Account is disabled' })
     }
     if (!user.is_verified) {
       throw new UnauthorizedException({
-        code:    'EMAIL_NOT_VERIFIED',
+        code: 'EMAIL_NOT_VERIFIED',
         message: 'Please verify your email before logging in.',
       })
     }
@@ -92,7 +102,10 @@ export class AuthService {
     const valid = await bcrypt.compare(dto.password, user.password_hash)
     if (!valid) {
       await this.redis.incrementLoginFailure(emailKey)
-      throw new UnauthorizedException({ code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' })
+      throw new UnauthorizedException({
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid email or password',
+      })
     }
 
     // Successful login — clear the failure counter
@@ -103,11 +116,11 @@ export class AuthService {
     return {
       ...tokens,
       user: {
-        id:        user.id,
-        email:     user.email,
+        id: user.id,
+        email: user.email,
         firstName: user.first_name,
-        lastName:  user.last_name,
-        role:      user.role,
+        lastName: user.last_name,
+        role: user.role,
       },
     }
   }
@@ -168,7 +181,8 @@ export class AuthService {
       'SELECT id, user_id, expires_at FROM store.verification_tokens WHERE token_hash = $1',
       [tokenHash],
     )
-    if (!row) throw new BadRequestException({ code: 'INVALID_TOKEN', message: 'Invalid or expired token' })
+    if (!row)
+      throw new BadRequestException({ code: 'INVALID_TOKEN', message: 'Invalid or expired token' })
     if (row.expires_at < new Date()) throw new BadRequestException({ code: 'TOKEN_EXPIRED' })
 
     await this.db.transaction(async (c) => {
@@ -204,7 +218,7 @@ export class AuthService {
     // Always same response to prevent email enumeration
     if (!user) return { message: 'If that email exists, a reset link was sent.' }
 
-    const token     = crypto.randomBytes(32).toString('hex')
+    const token = crypto.randomBytes(32).toString('hex')
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex')
     await this.db.execute(
       `INSERT INTO store.password_reset_tokens (user_id, token_hash, expires_at)
@@ -225,14 +239,19 @@ export class AuthService {
       'SELECT id, user_id, expires_at, used_at FROM store.password_reset_tokens WHERE token_hash = $1',
       [tokenHash],
     )
-    if (!row)         throw new BadRequestException({ code: 'INVALID_TOKEN' })
-    if (row.used_at)  throw new BadRequestException({ code: 'TOKEN_USED' })
+    if (!row) throw new BadRequestException({ code: 'INVALID_TOKEN' })
+    if (row.used_at) throw new BadRequestException({ code: 'TOKEN_USED' })
     if (row.expires_at < new Date()) throw new BadRequestException({ code: 'TOKEN_EXPIRED' })
 
     const newHash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS)
     await this.db.transaction(async (c) => {
-      await c.query('UPDATE store.users SET password_hash = $1 WHERE id = $2', [newHash, row.user_id])
-      await c.query('UPDATE store.password_reset_tokens SET used_at = NOW() WHERE id = $1', [row.id])
+      await c.query('UPDATE store.users SET password_hash = $1 WHERE id = $2', [
+        newHash,
+        row.user_id,
+      ])
+      await c.query('UPDATE store.password_reset_tokens SET used_at = NOW() WHERE id = $1', [
+        row.id,
+      ])
       // Revoke all refresh tokens — force re-login everywhere
       await c.query('DELETE FROM store.refresh_tokens WHERE user_id = $1', [row.user_id])
     })
@@ -241,14 +260,21 @@ export class AuthService {
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
     const user = await this.db.queryOne<any>(
-      'SELECT password_hash FROM store.users WHERE id = $1', [userId],
+      'SELECT password_hash FROM store.users WHERE id = $1',
+      [userId],
     )
     if (!user) throw new NotFoundException('User not found')
-    if (!await bcrypt.compare(dto.currentPassword, user.password_hash)) {
-      throw new BadRequestException({ code: 'INVALID_PASSWORD', message: 'Current password is incorrect' })
+    if (!(await bcrypt.compare(dto.currentPassword, user.password_hash))) {
+      throw new BadRequestException({
+        code: 'INVALID_PASSWORD',
+        message: 'Current password is incorrect',
+      })
     }
     const newHash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS)
-    await this.db.execute('UPDATE store.users SET password_hash = $1 WHERE id = $2', [newHash, userId])
+    await this.db.execute('UPDATE store.users SET password_hash = $1 WHERE id = $2', [
+      newHash,
+      userId,
+    ])
     // Revoke all refresh tokens on password change
     await this.db.execute('DELETE FROM store.refresh_tokens WHERE user_id = $1', [userId])
     return { message: 'Password changed successfully' }
@@ -264,7 +290,7 @@ export class AuthService {
     // Generate a cryptographically random raw token — this is what the user receives in email.
     // We NEVER persist the raw token; only its SHA-256 hash is stored in the DB.
     // This matches the pattern used for password_reset_tokens and refresh_tokens.
-    const rawToken  = crypto.randomBytes(32).toString('hex')
+    const rawToken = crypto.randomBytes(32).toString('hex')
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')
 
     await this.db.execute(
