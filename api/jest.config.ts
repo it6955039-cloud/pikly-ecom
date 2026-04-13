@@ -10,16 +10,10 @@ const config: Config = {
 
   // Where to find tests — co-located with source files (*.spec.ts)
   // and in dedicated test directories
-  testMatch: [
-    '**/*.spec.ts',
-    '**/__tests__/**/*.ts',
-  ],
+  testMatch: ['**/*.spec.ts', '**/__tests__/**/*.ts'],
 
   // Do not run these directories
-  testPathIgnorePatterns: [
-    '/node_modules/',
-    '/dist/',
-  ],
+  testPathIgnorePatterns: ['/node_modules/', '/dist/'],
 
   // Path aliases (must match tsconfig.json paths if any)
   moduleNameMapper: {
@@ -29,16 +23,15 @@ const config: Config = {
   // ts-jest config — transpile only (no type checking in tests for speed)
   // Type safety is enforced by `tsc --noEmit` in CI separately
   transform: {
-    '^.+\\.ts$': ['ts-jest', {
-      tsconfig: {
-        // Enable strictNullChecks in tests so they catch real null bugs
-        strictNullChecks: true,
-        strict:           false,  // match tsconfig.json baseline
+    '^.+\\.ts$': [
+      'ts-jest',
+      {
+        tsconfig: 'tsconfig.spec.json',
+        diagnostics: {
+          warnOnly: true,
+        },
       },
-      diagnostics: {
-        warnOnly: true,           // don't fail tests on TS errors (tsc does that)
-      },
-    }],
+    ],
   },
 
   // Show each test name in output (easier to read in CI)
@@ -59,9 +52,9 @@ const config: Config = {
   coverageThreshold: {
     global: {
       statements: 70,
-      branches:   60,
-      functions:  70,
-      lines:      70,
+      branches: 60,
+      functions: 70,
+      lines: 70,
     },
   },
 
@@ -69,8 +62,8 @@ const config: Config = {
   testTimeout: 30_000,
 
   // Clear mocks between every test (prevents state leakage)
-  clearMocks:   true,
-  resetMocks:   false,
+  clearMocks: true,
+  resetMocks: false,
   restoreMocks: false,
 }
 
