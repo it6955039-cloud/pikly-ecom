@@ -72,7 +72,7 @@ export class CartController {
   @ApiOperation({ summary: 'Add item to cart' })
   async addItem(@Request() req: any, @Body() dto: AddToCartDto) {
     const sessionId = this.resolveSessionId(req, dto.sessionId)
-    const data = await this.cartService.addItem({ ...dto, sessionId })
+    const data = await this.cartService.addItem({ ...dto, sessionId }, req.user?.userId)
     return successResponse(data)
   }
 
@@ -119,16 +119,13 @@ export class CartController {
     return successResponse(data)
   }
 
-  // mergeCart requires authentication — the user must be logged in to have a
-  // persistent user cart to merge into. AuthGuard('jwt') provides hard auth here.
   @Post('merge')
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Merge guest cart into authenticated user cart after login' })
   async mergeCart(@Request() req: any, @Body() dto: MergeCartDto) {
-    const userSessionId = `user:${req.user.userId}`
     const data = await this.cartService.mergeCart({
       ...dto,
-      userId: userSessionId, // SEC-04: use derived session, not caller-supplied userId
+      userId: req.user.userId, // raw UUID — mergeCart uses session_id="user:{UUID}" internally
     })
     return successResponse(data)
   }

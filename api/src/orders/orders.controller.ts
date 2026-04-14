@@ -32,13 +32,15 @@ export class OrdersController {
   // FEAT-02: pre-checkout shipping cost endpoint
   @Get('shipping-estimate')
   @ApiOperation({ summary: 'Calculate shipping cost before placing order' })
-  @ApiQuery({ name: 'sessionId', required: true })
   @ApiQuery({ name: 'addressId', required: true })
   async shippingEstimate(
     @Request() req: any,
-    @Query('sessionId') sessionId: string,
     @Query('addressId') addressId: string,
   ) {
+    // For authenticated users the cart is stored under session_id = "user:{UUID}".
+    // Deriving the sessionId from the verified JWT (like CartController does) ensures
+    // we always look up the right cart, regardless of what the client sends.
+    const sessionId = `user:${req.user.userId}`
     const data = await this.ordersService.calculateShipping(sessionId, addressId, req.user.userId)
     return successResponse(data)
   }

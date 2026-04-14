@@ -71,7 +71,7 @@ function buildFlags(p: any): Record<string, boolean> {
   }
 }
 
-function toCard(p: any) {
+export function toCard(p: any) {
   return {
     asin: p.asin,
     slug: p.slug,
@@ -427,10 +427,19 @@ export class ProductsService implements OnModuleInit {
     }
   }
 
-  async submitReview(asin: string, userId: string, dto: SubmitReviewDto) {
+  async submitReview(slugOrAsin: string, userId: string, dto: SubmitReviewDto) {
+    // Resolve the canonical product first — the controller passes a slug, but
+    // product_reviews.asin must store the actual ASIN, not the slug.
+    const p = this.findProductBySlug(slugOrAsin) ?? this.findProductByAsin(slugOrAsin)
+    if (!p)
+      throw new NotFoundException({
+        code: 'PRODUCT_NOT_FOUND',
+        message: `Product "${slugOrAsin}" not found`,
+      })
+
     const exists = await this.db.queryOne(
       'SELECT id FROM store.product_reviews WHERE asin = $1 AND user_id = $2',
-      [asin, userId],
+      [p.asin, userId],
     )
     if (exists)
       throw new BadRequestException({
@@ -439,7 +448,7 @@ export class ProductsService implements OnModuleInit {
       })
     await this.db.execute(
       'INSERT INTO store.product_reviews (asin, user_id, title, body, rating) VALUES ($1,$2,$3,$4,$5)',
-      [asin, userId, dto.title, dto.body, dto.rating],
+      [p.asin, userId, dto.title, dto.body, dto.rating],
     )
     await this.invalidate()
     return { message: 'Review submitted successfully' }

@@ -13,7 +13,8 @@ export class HomepageController {
     summary: 'Get full homepage data (hero, categories, deals, new arrivals, etc.)',
   })
   async getHomepage() {
-    const { data, cacheHit } = await this.homepageService.getHomepage()
+    const result = await this.homepageService.getHomepage()
+    const { cacheHit, ...data } = result
     return successResponse(data, { cacheHit })
   }
 

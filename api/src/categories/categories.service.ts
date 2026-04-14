@@ -67,13 +67,21 @@ export class CategoriesService implements OnModuleInit {
   }
 
   async adminCreate(dto: any) {
+    // Auto-generate a URL-safe slug from the name if the caller omits it
+    const slug =
+      dto.slug ??
+      dto.name
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
     const row = await this.db.queryOne<any>(
       `INSERT INTO store.categories (id,name,slug,parent_id,level,description,sort_order)
        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
       [
-        dto.id ?? `cat_${dto.slug}`,
+        dto.id ?? `cat_${slug}`,
         dto.name,
-        dto.slug,
+        slug,
         dto.parentId ?? null,
         dto.level ?? 0,
         dto.description ?? '',

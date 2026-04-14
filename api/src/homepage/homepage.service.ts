@@ -98,20 +98,27 @@ export class HomepageService implements OnModuleInit {
 
   async adminCreateBanner(dto: any) {
     const row = await this.db.queryOne<any>(
-      `INSERT INTO store.banners (id,title,subtitle,image,link,badge,color,sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      `INSERT INTO store.banners
+         (id, title, subtitle, image, link, cta_text, position,
+          is_active, sort_order, start_date, end_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [
         dto.id ?? `banner_${Date.now()}`,
         dto.title,
         dto.subtitle ?? null,
-        dto.image,
-        dto.link ?? null,
-        dto.badge ?? null,
-        dto.color ?? null,
-        dto.sortOrder ?? 0,
+        dto.image ?? null,
+        dto.ctaLink ?? dto.link ?? null,
+        dto.ctaText ?? null,
+        dto.position ?? 'hero',
+        dto.isActive ?? true,
+        dto.sortOrder ?? 99,
+        dto.startDate ?? null,
+        dto.endDate ?? null,
       ],
     )
+    // BUG-25: invalidate both caches — homepage:main embeds banners
     this.cache.del('homepage:banners')
+    this.cache.del('homepage:main')
     return row
   }
 
@@ -119,19 +126,35 @@ export class HomepageService implements OnModuleInit {
     const sets = ['updated_at=NOW()']
     const vals: any[] = []
     let i = 1
-    for (const k of [
-      'title',
-      'subtitle',
-      'image',
-      'link',
-      'badge',
-      'color',
-      'is_active',
-      'sort_order',
-    ]) {
-      if (k in dto) {
-        sets.push(`${k}=$${i++}`)
-        vals.push(dto[k])
+    // Map every possible camelCase DTO key to its snake_case DB column name
+    const keyMap: Record<string, string> = {
+      title:     'title',
+      subtitle:  'subtitle',
+      image:     'image',
+      ctaLink:   'link',
+      ctaText:   'cta_text',
+      link:      'link',
+      badge:     'badge',
+      color:     'color',
+      isActive:  'is_active',
+      is_active: 'is_active',
+      sortOrder: 'sort_order',
+      sort_order:'sort_order',
+      position:  'position',
+      startDate: 'start_date',
+      start_date:'start_date',
+      endDate:   'end_date',
+      end_date:  'end_date',
+    }
+    for (const [dtoKey, dbCol] of Object.entries(keyMap)) {
+      if (dtoKey in dto) {
+        // Avoid adding the same DB column twice when both camel and snake aliases appear
+        const placeholder = `${dbCol}=$${i}`
+        if (!sets.includes(placeholder)) {
+          sets.push(placeholder)
+          vals.push((dto as any)[dtoKey])
+          i++
+        }
       }
     }
     vals.push(id)
@@ -139,7 +162,9 @@ export class HomepageService implements OnModuleInit {
       `UPDATE store.banners SET ${sets.join(',')} WHERE id=$${i} RETURNING *`,
       vals,
     )
+    // BUG-25: invalidate both caches — homepage:main embeds banners
     this.cache.del('homepage:banners')
+    this.cache.del('homepage:main')
     return row
   }
 

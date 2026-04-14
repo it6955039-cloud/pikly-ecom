@@ -95,7 +95,7 @@ export class AdminCategoriesController {
   @ApiQuery({ name: 'isActive', required: false })
   findAll(@Query('isActive') isActive?: string) {
     let cats = this.categoriesService.categories
-    if (isActive !== undefined) cats = cats.filter((c: any) => c.isActive === (isActive === 'true'))
+    if (isActive !== undefined) cats = cats.filter((c: any) => c.is_active === (isActive === 'true'))
     return successResponse(cats)
   }
 
@@ -122,8 +122,9 @@ export class AdminCategoriesController {
         code: 'CATEGORY_NOT_FOUND',
         message: `Category "${id}" not found`,
       })
+    // categories from DB use snake_case (is_active); adminUpdate checks snake_case keys
     return successResponse(
-      await this.categoriesService.adminUpdate(id, { isActive: !current.isActive }),
+      await this.categoriesService.adminUpdate(id, { is_active: !current.is_active }),
     )
   }
 

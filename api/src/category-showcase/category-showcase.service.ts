@@ -32,8 +32,9 @@ export class CategoryShowcaseService {
     >()
 
     for (const product of this.productsService.products) {
-      if (!product.isActive) continue
-      const key = product.category as string
+      if (!product.is_active) continue
+      const key = (product.taxonomy_dept ?? product.cat_lvl0 ?? '') as string
+      if (!key) continue
       if (!categoryMap.has(key)) {
         const catMeta = this.categoriesService.categories.find(
           (c: any) => c.slug === key || c.name?.toLowerCase() === key?.toLowerCase(),
@@ -41,7 +42,7 @@ export class CategoryShowcaseService {
         categoryMap.set(key, {
           categoryName: catMeta?.name ?? this.capitalize(key),
           categorySlug: key,
-          featured: catMeta?.featured ?? false,
+          featured: catMeta?.is_featured ?? false,
           products: [],
         })
       }
@@ -70,7 +71,7 @@ export class CategoryShowcaseService {
         products: cat.products.slice(0, productsLimit).map((p: any) => ({
           title: p.title,
           slug: p.slug,
-          image: p.media?.mainImage ?? p.media?.images?.[0]?.url ?? p.media?.thumb ?? null,
+          image: p.thumbnail ?? null,
         })),
       })),
       pagination: {

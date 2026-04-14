@@ -10,12 +10,12 @@ export class ImagesService {
     const { page, limit = 10, cursor } = query
 
     const allProducts = this.productsService.products
-      .filter((p) => p.isActive)
+      .filter((p) => p.is_active)
       .map((p) => ({
         title: p.title,
         slug: p.slug,
-        categoryName: p.subSubcategory ?? p.subcategory ?? p.category,
-        media: p.media,
+        categoryName: p.taxonomy_dept ?? p.cat_lvl0 ?? '',
+        thumbnail: p.thumbnail ?? null,
       }))
 
     const paginated = smartPaginate(allProducts, { page, limit, cursor })
@@ -23,7 +23,7 @@ export class ImagesService {
     const grouped: Record<string, any[]> = {}
     for (const p of paginated.items) {
       if (!grouped[p.categoryName]) grouped[p.categoryName] = []
-      grouped[p.categoryName].push({ title: p.title, slug: p.slug, media: p.media })
+      grouped[p.categoryName].push({ title: p.title, slug: p.slug, thumbnail: p.thumbnail })
     }
 
     return {

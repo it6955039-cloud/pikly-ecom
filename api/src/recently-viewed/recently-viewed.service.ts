@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { DatabaseService } from '../database/database.service'
 import { ProductsService } from '../products/products.service'
+import { smartPaginate } from '../common/api-utils'
 
 const MAX_RECENT = 20
 
@@ -42,8 +43,10 @@ export class RecentlyViewedService {
   }
 
   async getRecent(userId: string, opts: { page?: number; limit?: number; cursor?: string } = {}) {
+    const { page, cursor } = opts
     const limit = Math.min(50, Math.max(1, opts.limit ?? 10))
-    const items = await this.getRecentlyViewed(userId, limit)
-    return { items, total: items.length, limit }
+    // Fetch the MAX_RECENT ceiling then paginate in-memory — avoids an extra COUNT query
+    const allItems = await this.getRecentlyViewed(userId, MAX_RECENT)
+    return smartPaginate(allItems, { page, limit, cursor })
   }
 }

@@ -48,7 +48,7 @@ describe('OrdersService', () => {
     db = makeDatabaseService()
 
     cartService = {
-      getCartByUser: jest.fn().mockResolvedValue(mockCartWithItems),
+      getCart: jest.fn().mockResolvedValue(mockCartWithItems),
       clearCart: jest.fn().mockResolvedValue({ cleared: true }),
     }
 
@@ -91,7 +91,7 @@ describe('OrdersService', () => {
 
   describe('create', () => {
     it('throws CART_EMPTY when cart has no items', async () => {
-      cartService.getCartByUser.mockResolvedValueOnce({ items: [], summary: {} })
+      cartService.getCart.mockResolvedValueOnce({ items: [], summary: {} })
       await expect(
         service.create(USER_ID, { shippingAddress: {}, paymentMethod: 'card' } as any),
       ).rejects.toThrow(BadRequestException)

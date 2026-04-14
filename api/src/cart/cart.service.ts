@@ -74,7 +74,7 @@ export class CartService {
         slug:        p.slug,
         title:       p.productResults?.title ?? p.title ?? '',
         brand:       p.brand ?? '',
-        image:       p.productResults?.thumbnail ?? p.media?.mainImage ?? '',
+        image:       p.thumbnail ?? p.productResults?.thumbnail ?? '',
         price,
         quantity:    qty,
         subtotal:    parseFloat((qty * price).toFixed(2)),
@@ -93,7 +93,12 @@ export class CartService {
     const { sessionId } = dto
     const cart  = await this.getOrCreate(sessionId)
     const items: any[] = cart.items ?? []
-    const idx   = items.findIndex(i => i.productId === dto.productId)
+    const idx   = items.findIndex(i =>
+      i.productId === dto.productId &&
+      (dto.variantId === undefined || dto.variantId === null
+        ? true
+        : i.variantId === dto.variantId)
+    )
     if (idx === -1) throw new NotFoundException({ code: 'ITEM_NOT_FOUND' })
     if (dto.quantity <= 0) {
       items.splice(idx, 1)
@@ -145,13 +150,37 @@ export class CartService {
     const { userId } = dto
     const guest = await this.db.queryOne<any>('SELECT * FROM store.carts WHERE session_id=$1', [dto.guestSessionId])
     if (!guest || !(guest.items ?? []).length) return { merged: false }
-    let userCart = await this.db.queryOne<any>('SELECT * FROM store.carts WHERE user_id=$1', [userId])
+    const userSessionId = `user:${userId}`
+    let userCart = await this.db.queryOne<any>('SELECT * FROM store.carts WHERE session_id=$1', [userSessionId])
     if (!userCart) {
-      await this.db.execute('UPDATE store.carts SET user_id=$1,updated_at=NOW() WHERE session_id=$2', [userId, dto.guestSessionId])
+      // No user cart exists yet — just claim the guest cart
+      await this.db.execute(
+        'UPDATE store.carts SET session_id=$1, user_id=$2, updated_at=NOW() WHERE session_id=$3',
+        [userSessionId, userId, dto.guestSessionId],
+      )
       return { merged: true }
     }
-    const mergedItems = [...(userCart.items ?? []), ...(guest.items ?? [])]
-    await this.db.execute('UPDATE store.carts SET items=$1,updated_at=NOW() WHERE user_id=$2', [JSON.stringify(mergedItems), userId])
+    // Merge: combine items by productId+variantId key, summing quantities (capped at 10)
+    const itemMap = new Map<string, any>()
+    for (const item of (userCart.items ?? [])) {
+      const key = `${item.productId}::${item.variantId ?? ''}`
+      itemMap.set(key, { ...item })
+    }
+    for (const item of (guest.items ?? [])) {
+      const key = `${item.productId}::${item.variantId ?? ''}`
+      if (itemMap.has(key)) {
+        const existing = itemMap.get(key)!
+        existing.quantity = Math.min(existing.quantity + item.quantity, 10)
+        existing.subtotal = parseFloat((existing.quantity * existing.price).toFixed(2))
+      } else {
+        itemMap.set(key, { ...item })
+      }
+    }
+    const mergedItems = Array.from(itemMap.values())
+    await this.db.execute(
+      'UPDATE store.carts SET items=$1, user_id=$2, updated_at=NOW() WHERE session_id=$3',
+      [JSON.stringify(mergedItems), userId, userSessionId],
+    )
     await this.db.execute('DELETE FROM store.carts WHERE session_id=$1', [dto.guestSessionId])
     return { merged: true }
   }

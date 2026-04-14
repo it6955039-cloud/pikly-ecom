@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Query } from '@nestjs/common'
 import { ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger'
 import { paginatedResponse, successResponse } from '../common/api-utils'
-import { ProductsService } from '../products/products.service'
+import { ProductsService, toCard } from '../products/products.service'
 import { CategoriesService } from './categories.service'
 
 @ApiTags('Categories')
@@ -14,8 +14,8 @@ export class CategoriesController {
 
   @Get()
   @ApiOperation({ summary: 'Get full category tree (hierarchical)' })
-  findAll() {
-    const data = this.categoriesService.getTree()
+  async findAll() {
+    const data = await this.categoriesService.getTree()
     return successResponse(data)
   }
 
@@ -28,8 +28,8 @@ export class CategoriesController {
   @Get(':slug')
   @ApiOperation({ summary: 'Get single category with children' })
   @ApiParam({ name: 'slug' })
-  findOne(@Param('slug') slug: string) {
-    return successResponse(this.categoriesService.findBySlug(slug))
+  async findOne(@Param('slug') slug: string) {
+    return successResponse(await this.categoriesService.findBySlug(slug))
   }
 
   @Get(':slug/products')
@@ -43,7 +43,7 @@ export class CategoriesController {
     const page = Math.max(1, Number(query.page ?? 1))
     const limit = Math.min(100, Math.max(1, Number(query.limit ?? 20)))
     const start = (page - 1) * limit
-    const items = products.slice(start, start + limit)
+    const items = products.slice(start, start + limit).map(toCard)
     return paginatedResponse(
       items,
       { total: products.length, page, limit, totalPages: Math.ceil(products.length / limit) },

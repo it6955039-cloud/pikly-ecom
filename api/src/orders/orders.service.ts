@@ -48,7 +48,8 @@ export class OrdersService {
       }
     }
 
-    const cartData = await this.cartService.getCartByUser(userId)
+    const sessionId = `user:${userId}`
+    const cartData = await this.cartService.getCart(sessionId)
     if (!cartData || !(cartData.items ?? []).length) {
       throw new BadRequestException({ code: 'CART_EMPTY' })
     }

@@ -159,7 +159,7 @@ export class AdminBannersController {
     if (!banner)
       throw new NotFoundException({ code: 'BANNER_NOT_FOUND', message: `Banner "${id}" not found` })
     return successResponse(
-      await this.homepageService.adminUpdateBanner(id, { isActive: !banner.isActive }),
+      await this.homepageService.adminUpdateBanner(id, { isActive: !banner.is_active }),
     )
   }
 
