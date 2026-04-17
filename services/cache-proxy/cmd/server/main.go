@@ -126,8 +126,21 @@ func main() {
 	// ── Gin router ───────────────────────────────────────────────────────────
 	gin.SetMode(cfg.GinMode)
 	r := gin.New()
+
+	// Middleware order matters:
+	//   1. RequestID    — stamp every request with a trace ID first so all
+	//                     subsequent middleware and handlers can reference it.
+	//   2. CORS         — must run before SecurityHeaders so that
+	//                     Access-Control-* headers are written before any
+	//                     handler (including the cache layer) flushes the
+	//                     response. Also short-circuits OPTIONS preflights
+	//                     before they reach the proxy or upstream.
+	//   3. SecurityHeaders — adds X-Content-Type-Options, X-Frame-Options, etc.
+	//   4. Logger       — records the final status code after all handlers run.
+	//   5. Metrics      — records Prometheus counters/histograms after handlers.
 	r.Use(
 		middleware.RequestID(),
+		middleware.CORS(log),
 		middleware.SecurityHeaders(),
 		middleware.Logger(log),
 		middleware.Metrics(),
