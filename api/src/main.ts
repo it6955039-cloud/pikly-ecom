@@ -44,19 +44,64 @@ async function bootstrap() {
   // Images are stored on Cloudinary (persistent CDN) via POST /admin/upload.
   // Cloudinary URLs survive Railway deploys and horizontal scaling.
 
-  // ── CORS ────────────────────────────────────────────────────────────────
-  const origins = process.env['ALLOWED_ORIGINS']?.split(',').map((s) => s.trim()) ?? '*'
   // ── Global API prefix ───────────────────────────────────────────────────
   app.setGlobalPrefix('api', { exclude: ['health', 'health/detail'] })
 
+  // ── CORS ─────────────────────────────────────────────────────────────────
+  //
+  // Strategy:
+  //   • Production  → only origins listed in ALLOWED_ORIGINS pass.
+  //   • Development → any localhost origin is also allowed automatically,
+  //                   so Next.js (:3000), Vite (:5173), Angular (:4200), etc.
+  //                   all work without touching env files.
+  //   • Server-to-server / curl / Postman → no Origin header → always allowed
+  //                   (they are not subject to browser CORS policy).
+  //
+  // ALLOWED_ORIGINS must be a comma-separated list of full origins, e.g.:
+  //   ALLOWED_ORIGINS=https://pikly.com,https://www.pikly.com,https://admin.pikly.com
+  //
+  const isProd = process.env['NODE_ENV'] === 'production'
+
+  const explicitOrigins: string[] = (process.env['ALLOWED_ORIGINS'] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  // Matches any http/https localhost origin regardless of port number
+  const LOCALHOST_ORIGIN_RE = /^https?:\/\/localhost(:\d+)?$/
+
+  function corsOriginValidator(
+    origin: string | undefined,
+    callback: (err: Error | null, allow?: boolean) => void,
+  ): void {
+    // No Origin header → non-browser caller (curl, Postman, server) → allow
+    if (!origin) return callback(null, true)
+
+    // Explicitly whitelisted origin (works in both dev & prod)
+    if (explicitOrigins.includes(origin)) return callback(null, true)
+
+    // In development, allow any localhost port automatically
+    if (!isProd && LOCALHOST_ORIGIN_RE.test(origin)) return callback(null, true)
+
+    // Blocked — log so Railway/server logs make the denial visible
+    console.warn(`🚫  CORS blocked origin: "${origin}"`)
+    return callback(new Error(`CORS: origin "${origin}" is not permitted`))
+  }
+
   app.enableCors({
-    origin:         origins,
-    methods:        'GET,POST,PATCH,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type,Authorization,X-Session-ID,Idempotency-Key',
+    origin:         corsOriginValidator,
+    methods:        ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Session-ID', 'Idempotency-Key'],
+    exposedHeaders: ['X-Total-Count'],   // lets frontend read pagination totals from headers
+    credentials:    true,                // required for Authorization header & cookie flows
+    maxAge:         86_400,              // cache OPTIONS preflight 24 h → fewer round-trips
   })
 
   // ── Security / compression / logging ────────────────────────────────────
-  app.use(helmet())
+  // helmet is applied AFTER enableCors so CORS headers are already committed.
+  // crossOriginResourcePolicy is set to cross-origin so CDN assets (Cloudinary)
+  // and API responses are not blocked by the browser's CORP enforcement.
+  app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
   app.use(compression())
   app.use(morgan(process.env['NODE_ENV'] === 'production' ? 'combined' : 'dev'))
 

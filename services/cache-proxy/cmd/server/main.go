@@ -127,6 +127,7 @@ func main() {
 	gin.SetMode(cfg.GinMode)
 	r := gin.New()
 	r.Use(
+		middleware.Cors(),         // must be first — sets CORS headers before any other handler
 		middleware.RequestID(),
 		middleware.SecurityHeaders(),
 		middleware.Logger(log),

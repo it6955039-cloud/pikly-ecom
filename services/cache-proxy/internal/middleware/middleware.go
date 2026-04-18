@@ -3,7 +3,11 @@ package middleware
 
 import (
 	"math/rand"
+	"net/http"
+	"os"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -120,6 +124,83 @@ func SecurityHeaders() gin.HandlerFunc {
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Header("X-Powered-By", "pikly/4.0")
+		c.Next()
+	}
+}
+
+// Cors handles Cross-Origin Resource Sharing for browser clients.
+//
+// The proxy is the entry point for all browser requests, so CORS headers
+// must be set here — not on the upstream NestJS API (which the proxy calls
+// server-to-server, without an Origin header).
+//
+// Strategy (mirrors the NestJS API policy):
+//   • Origins listed in ALLOWED_ORIGINS env var → always allowed (dev + prod)
+//   • Any localhost origin → allowed automatically when GIN_MODE != "release"
+//   • No Origin header (curl, Postman, server) → pass through unchanged
+//   • Everything else → 403 Forbidden
+//
+// ALLOWED_ORIGINS must be a comma-separated list of full origins:
+//   ALLOWED_ORIGINS=http://localhost:3000,https://pikly.com,https://www.pikly.com
+func Cors() gin.HandlerFunc {
+	isProd := os.Getenv("GIN_MODE") == "release"
+
+	// Parse the whitelist once at startup
+	rawOrigins := os.Getenv("ALLOWED_ORIGINS")
+	explicitOrigins := map[string]struct{}{}
+	for _, o := range strings.Split(rawOrigins, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			explicitOrigins[o] = struct{}{}
+		}
+	}
+
+	// Matches http://localhost, http://localhost:3000, https://localhost:5173, etc.
+	localhostRE := regexp.MustCompile(`^https?://localhost(:\d+)?$`)
+
+	const (
+		allowedHeaders = "Content-Type,Authorization,X-Session-ID,Idempotency-Key,X-Request-ID"
+		allowedMethods = "GET,POST,PATCH,DELETE,OPTIONS"
+		exposedHeaders = "X-Total-Count,X-Cache,Age,X-Request-ID"
+		maxAge         = "86400" // 24 h — browsers cache preflight, fewer OPTIONS round-trips
+	)
+
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+
+		// No Origin header → server-to-server caller → not subject to CORS
+		if origin == "" {
+			c.Next()
+			return
+		}
+
+		_, isExplicit := explicitOrigins[origin]
+		isLocalhost := !isProd && localhostRE.MatchString(origin)
+
+		if !isExplicit && !isLocalhost {
+			// Log the blocked origin so it shows up in Railway logs
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "CORS: origin not permitted — add it to ALLOWED_ORIGINS",
+			})
+			return
+		}
+
+		// Set CORS headers on every response (including cache hits)
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Access-Control-Allow-Credentials", "true")
+		c.Header("Access-Control-Allow-Methods", allowedMethods)
+		c.Header("Access-Control-Allow-Headers", allowedHeaders)
+		c.Header("Access-Control-Expose-Headers", exposedHeaders)
+		c.Header("Access-Control-Max-Age", maxAge)
+		// Vary: Origin tells CDNs / browsers to cache responses per origin
+		c.Header("Vary", "Origin")
+
+		// OPTIONS preflight — respond immediately, do not forward to upstream
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+
 		c.Next()
 	}
 }
