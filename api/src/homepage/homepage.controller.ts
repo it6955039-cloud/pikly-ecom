@@ -1,26 +1,69 @@
+// src/homepage/homepage.controller.ts
 import { Controller, Get, Query, UseGuards, Request } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiQuery, ApiBearerAuth } from '@nestjs/swagger'
-import { AuthGuard } from '@nestjs/passport'
-import { HomepageService } from './homepage.service'
-import { HomepageWidgetsService } from './homepage-widgets.service'
-import { PersonalizationService } from './homepage-personalization.service'
-import { OptionalJwtGuard } from '../common/guards/optional-jwt.guard'
-import { successResponse } from '../common/api-utils'
+import { AuthGuard }          from '@nestjs/passport'
+import { HomepageService }    from './homepage.service'
+import { HomepageStorefrontService } from './homepage-storefront.service'
+import { PersonalizationService }    from './homepage-personalization.service'
+import { OptionalJwtGuard }   from '../common/guards/optional-jwt.guard'
+import { successResponse }    from '../common/api-utils'
 
 @ApiTags('Homepage')
 @Controller('homepage')
 export class HomepageController {
   constructor(
-    private readonly homepageService: HomepageService,
-    private readonly widgetsService: HomepageWidgetsService,
-    private readonly p13nService: PersonalizationService,
+    private readonly homepageService:    HomepageService,
+    private readonly storefrontService:  HomepageStorefrontService,
+    private readonly p13nService:        PersonalizationService,
   ) {}
 
-  // ── Existing routes (unchanged) ───────────────────────────────────────────
+  // ── Primary: Amazon-style storefront ─────────────────────────────────────
+  //
+  // This is the main endpoint the frontend should use.
+  // Returns a fully-typed, ordered array of sections — each section tells the
+  // frontend exactly which component to render and supplies all required data.
+  //
+  // No auth required — works for anonymous visitors.
+  // Pair with GET /homepage/personalized for logged-in enhancements.
+
+  @Get('storefront')
+  @ApiOperation({
+    summary: 'Amazon-style storefront — ordered sections with fully resolved data',
+    description: `
+Primary homepage endpoint. Returns an ordered \`sections[]\` array.
+
+Each section has a stable \`sectionId\`, a \`type\` that maps to a frontend
+component, and a fully resolved \`data\` payload — no secondary API calls needed.
+
+**Section types:**
+| type | Frontend component | Data shape |
+|---|---|---|
+| \`hero_banner\` | HeroBanner / Slider | \`{ banners[] }\` |
+| \`category_grid\` | CategoryGrid (2×N) | \`{ cells[] }\` — each cell has name, image, productImages[] |
+| \`product_carousel\` | ProductCarousel | \`{ strategy, products[] }\` |
+| \`dept_spotlight\` | DeptSpotlight | \`{ dept, products[4] }\` |
+
+**Caching:** L1 NodeCache (5 min) + L2 Redis/Upstash (5 min).
+\`meta.cacheHit\` and \`meta.cacheTier\` tell you which tier served the response.
+
+Pair with \`GET /homepage/personalized\` (requires auth) to add personalised
+sections for logged-in users.
+    `,
+  })
+  async getStorefront() {
+    const { payload, cacheHit, cacheTier } = await this.storefrontService.getStorefront()
+    return successResponse(payload, {
+      cacheHit,
+      cacheTier,
+      sectionCount: payload.sectionCount,
+    })
+  }
+
+  // ── Legacy: flat homepage data (keep for backward compatibility) ──────────
 
   @Get()
   @ApiOperation({
-    summary: 'Get full homepage data (hero, categories, deals, new arrivals, etc.)',
+    summary: '[Legacy] Flat homepage data — prefer GET /homepage/storefront',
   })
   async getHomepage() {
     const result = await this.homepageService.getHomepage()
@@ -30,64 +73,37 @@ export class HomepageController {
 
   @Get('banners')
   @ApiOperation({
-    summary: 'Get banners — filter by position (hero | sidebar | category_top)',
+    summary: 'Banners — filter by position (hero | secondary | sidebar)',
   })
   @ApiQuery({ name: 'position', required: false })
   async getBanners(@Query('position') position?: string) {
     return successResponse(await this.homepageService.getBanners(position))
   }
 
-  // ── New: widget slot composition API ─────────────────────────────────────
-
-  @Get('widgets')
-  @UseGuards(OptionalJwtGuard)
-  @ApiOperation({
-    summary: 'Get resolved homepage widget slots (page composition)',
-    description: `
-Returns the ordered list of active homepage sections with their fully-resolved
-data payloads. This is the dynamic, admin-configurable alternative to GET /homepage.
-
-Widget types returned:
-- **hero_banner**      → { banners[] }
-- **product_carousel** → { products[], strategy }
-- **category_grid**    → { cells[] } — 2×N subcategory image grid
-- **dept_spotlight**   → { dept, products[] }
-- **campaign**         → { products[], strategy, filterDept }
-
-Authenticated users (Bearer token) also receive widgets with target="authenticated".
-Anonymous visitors receive only target="all" and target="anonymous" widgets.
-    `,
-  })
-  @ApiBearerAuth()
-  async getWidgets(@Request() req: any) {
-    // OptionalJwtGuard populates req.user when a valid JWT is present but
-    // does NOT throw for unauthenticated requests — so both paths work.
-    const isAuthenticated = !!req.user?.userId
-    const widgets = await this.widgetsService.getActiveWidgets(isAuthenticated)
-    return successResponse(widgets, { widgetCount: widgets.length })
-  }
-
-  // ── New: authenticated personalization API ────────────────────────────────
+  // ── Authenticated personalisation ─────────────────────────────────────────
+  //
+  // Call this in addition to /storefront when the user is logged in.
+  // Inject the returned sections at the appropriate positions in the storefront
+  // layout (after hero, after bestsellers, etc.) based on your UX design.
 
   @Get('personalized')
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Get personalised homepage sections (requires authentication)',
+    summary: 'Personalised sections for logged-in users (requires auth)',
     description: `
-Returns four personalization sections for the authenticated user:
+Returns four personalisation sections for the authenticated user:
 
 - **continueShoppingFor**    — Recently viewed items not yet purchased
 - **basedOnBrowsingHistory** — Top-rated products from the user's most-visited departments
-                               (Wilson-score sorted: rating × log(reviews))
-- **alsoViewed**             — Item-item collaborative filtering via SQL co-occurrence.
-                               "Customers who viewed items you've viewed also viewed..."
-- **moreToConsider**         — Trending products in the user's affinity departments
+- **alsoViewed**             — Item-item collaborative filtering (SQL co-occurrence)
+- **moreToConsider**         — Trending products in user's affinity departments
 
-All sections fall back gracefully to global signals when the user has no history,
-so the endpoint always returns useful data even for new accounts.
+Falls back gracefully to global signals for new users with no history.
+Results cached per-user in Redis for 5 minutes.
 
-Results are cached per-user in Redis for 5 minutes.
+**Usage:** Call alongside \`GET /homepage/storefront\` and splice personalised
+sections into the layout wherever your UX requires.
     `,
   })
   async getPersonalized(@Request() req: any) {

@@ -1,16 +1,11 @@
-import {
-  Controller, Get, Post, Param, Query,
-  UseGuards, Request, Body,
-} from '@nestjs/common'
+import { Controller, Get, Post, Param, Query, UseGuards, Request, Body } from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
-import {
-  ApiTags, ApiOperation, ApiParam, ApiQuery, ApiBearerAuth,
-} from '@nestjs/swagger'
+import { ApiTags, ApiOperation, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger'
 import { OptionalJwtGuard } from '../common/guards/optional-jwt.guard'
-import { ProductsService }   from './products.service'
+import { ProductsService } from './products.service'
 import { FilterProductsDto } from './dto/filter-products.dto'
-import { ReviewQueryDto }    from './dto/review-query.dto'
-import { SubmitReviewDto }   from './dto/submit-review.dto'
+import { ReviewQueryDto } from './dto/review-query.dto'
+import { SubmitReviewDto } from './dto/submit-review.dto'
 import { successResponse, paginatedResponse } from '../common/api-utils'
 
 @ApiTags('Products')
@@ -21,7 +16,7 @@ export class ProductsController {
   // ── Curated lists ──────────────────────────────────────────────────────────
 
   @Get('featured')
-  @ApiOperation({ summary: 'Amazon\'s Choice + featured products' })
+  @ApiOperation({ summary: "Amazon's Choice + featured products" })
   async getFeatured(@Query('limit') limit = 20) {
     return successResponse(await this.productsService.getFeatured(Number(limit)))
   }
@@ -70,8 +65,8 @@ export class ProductsController {
   @Get()
   @ApiOperation({ summary: 'Product list with Algolia faceting and filtering' })
   async findAll(@Query() query: FilterProductsDto) {
-    const { data, cacheHit } = await this.productsService.findAll(query)
-    return { ...data, meta: { ...data.meta, cacheHit } }
+    const { data, cacheHit, cacheTier } = await this.productsService.findAll(query)
+    return { ...data, meta: { ...data.meta, cacheHit, cacheTier } }
   }
 
   // ── Product detail ─────────────────────────────────────────────────────────
@@ -101,8 +96,6 @@ export class ProductsController {
     @Request() req: any,
     @Body() dto: SubmitReviewDto,
   ) {
-    return successResponse(
-      await this.productsService.submitReview(slug, req.user.userId, dto),
-    )
+    return successResponse(await this.productsService.submitReview(slug, req.user.userId, dto))
   }
 }

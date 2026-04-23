@@ -6,6 +6,7 @@
 //  • findOne(): SELECT includes enrichment_source_data; response exposes it
 //  • gThumbs() already handles p.thumbnails column (TEXT[]) — no change needed
 //  • source default changed from 'oxylabs' to 'pikly' in response shape
+//  • findAll(): two-tier cache (L1 NodeCache + L2 Redis/Upstash) — cacheHit now works
 //
 import {
   BadRequestException,
@@ -15,81 +16,81 @@ import {
   OnModuleInit,
 } from '@nestjs/common'
 import Fuse from 'fuse.js'
-import { AlgoliaService } from '../algolia/algolia.service'
-import { CategoriesService } from '../categories/categories.service'
-import { smartPaginate } from '../common/api-utils'
-import { CacheService } from '../common/cache.service'
-import { DatabaseService } from '../database/database.service'
-import { RedisService } from '../redis/redis.service'
-import { FilterProductsDto } from './dto/filter-products.dto'
-import { ReviewQueryDto } from './dto/review-query.dto'
-import { SubmitReviewDto } from './dto/submit-review.dto'
+import { AlgoliaService }      from '../algolia/algolia.service'
+import { CategoriesService }   from '../categories/categories.service'
+import { smartPaginate }       from '../common/api-utils'
+import { CacheService, TTL }   from '../common/cache.service'
+import { DatabaseService }     from '../database/database.service'
+import { RedisService }        from '../redis/redis.service'
+import { FilterProductsDto }   from './dto/filter-products.dto'
+import { ReviewQueryDto }      from './dto/review-query.dto'
+import { SubmitReviewDto }     from './dto/submit-review.dto'
 
 // ── Field extractors ──────────────────────────────────────────────────────────
-const gTitle = (p: any): string => p.title ?? p.product_results?.title ?? ''
-const gBrand = (p: any): string =>
+const gTitle   = (p: any): string => p.title ?? p.product_results?.title ?? ''
+const gBrand   = (p: any): string =>
   (p.brand ?? p.product_results?.brand ?? '').replace(/^Visit the\s+|\s+Store\s*$/gi, '').trim()
-const gPrice = (p: any): number => p.price ?? p.product_results?.extracted_price ?? 0
-const gOldPx = (p: any): number | null =>
+const gPrice   = (p: any): number => p.price ?? p.product_results?.extracted_price ?? 0
+const gOldPx   = (p: any): number | null =>
   p.original_price ?? p.product_results?.extracted_old_price ?? null
-const gRating = (p: any): number => p.avg_rating ?? p.product_results?.rating ?? 0
+const gRating  = (p: any): number => p.avg_rating ?? p.product_results?.rating ?? 0
 const gReviews = (p: any): number => p.review_count ?? p.product_results?.reviews ?? 0
-const gDisc = (p: any): number => p.discount_pct ?? 0
-const gImage = (p: any): string => p.thumbnail ?? p.product_results?.thumbnail ?? ''
-const gThumbs = (p: any): string[] => p.thumbnails ?? p.product_results?.thumbnails ?? []
+const gDisc    = (p: any): number => p.discount_pct ?? 0
+const gImage   = (p: any): string => p.thumbnail ?? p.product_results?.thumbnail ?? ''
+const gThumbs  = (p: any): string[] => p.thumbnails ?? p.product_results?.thumbnails ?? []
 const gInStock = (p: any): boolean => p.in_stock ?? p.flags?.inStock ?? true
-const gPrime = (p: any): boolean => p.is_prime ?? p.flags?.isPrime ?? false
-const gOnSale = (p: any): boolean => p.is_on_sale ?? p.flags?.isOnSale ?? false
-const gDept = (p: any): string => p.taxonomy_dept ?? ''
-const gSubcat = (p: any): string => p.taxonomy_subcat ?? ''
+const gPrime   = (p: any): boolean => p.is_prime ?? p.flags?.isPrime ?? false
+const gOnSale  = (p: any): boolean => p.is_on_sale ?? p.flags?.isOnSale ?? false
+const gDept    = (p: any): string => p.taxonomy_dept ?? ''
+const gSubcat  = (p: any): string => p.taxonomy_subcat ?? ''
 
 const gBadges = (p: any): string[] => {
   const b = new Set<string>(p.product_results?.badges ?? [])
-  if (p.is_best_seller || p.flags?.isBestSeller) b.add('Best Seller')
-  if (p.is_amazon_choice || p.flags?.isAmazonsChoice) b.add("Amazon's Choice")
-  if (p.is_trending || p.flags?.isTrending) b.add('Trending')
-  if (p.is_free_ship || p.flags?.isFreeShipping) b.add('Free Shipping')
-  if (p.is_deal || p.flags?.isDeal) b.add('Deal')
-  if (p.is_new_release || p.flags?.isNewRelease) b.add('New Release')
+  if (p.is_best_seller   || p.flags?.isBestSeller)    b.add('Best Seller')
+  if (p.is_amazon_choice || p.flags?.isAmazonsChoice)  b.add("Amazon's Choice")
+  if (p.is_trending      || p.flags?.isTrending)       b.add('Trending')
+  if (p.is_free_ship     || p.flags?.isFreeShipping)   b.add('Free Shipping')
+  if (p.is_deal          || p.flags?.isDeal)            b.add('Deal')
+  if (p.is_new_release   || p.flags?.isNewRelease)     b.add('New Release')
   return [...b]
 }
 
 function buildFlags(p: any): Record<string, boolean> {
   const f = p.flags ?? {}
   return {
-    isBestSeller: f.isBestSeller ?? p.is_best_seller ?? false,
-    isAmazonsChoice: f.isAmazonsChoice ?? p.is_amazon_choice ?? false,
-    isTrending: f.isTrending ?? p.is_trending ?? false,
+    isBestSeller:    f.isBestSeller    ?? p.is_best_seller    ?? false,
+    isAmazonsChoice: f.isAmazonsChoice ?? p.is_amazon_choice  ?? false,
+    isTrending:      f.isTrending      ?? p.is_trending       ?? false,
     isHighlyPopular: f.isHighlyPopular ?? false,
-    isNewRelease: f.isNewRelease ?? p.is_new_release ?? false,
-    isFreeShipping: f.isFreeShipping ?? p.is_free_ship ?? false,
-    isPrime: f.isPrime ?? p.is_prime ?? false,
-    isOnSale: f.isOnSale ?? p.is_on_sale ?? false,
-    isDeal: f.isDeal ?? p.is_deal ?? false,
-    isTopRated: f.isTopRated ?? p.is_top_rated ?? false,
-    inStock: f.inStock ?? p.in_stock ?? true,
+    isNewRelease:    f.isNewRelease    ?? p.is_new_release     ?? false,
+    isFreeShipping:  f.isFreeShipping  ?? p.is_free_ship       ?? false,
+    isPrime:         f.isPrime         ?? p.is_prime           ?? false,
+    isOnSale:        f.isOnSale        ?? p.is_on_sale         ?? false,
+    isDeal:          f.isDeal          ?? p.is_deal            ?? false,
+    isTopRated:      f.isTopRated      ?? p.is_top_rated       ?? false,
+    inStock:         f.inStock         ?? p.in_stock           ?? true,
   }
 }
 
 export function toCard(p: any) {
   return {
-    asin: p.asin,
-    slug: p.slug,
-    title: gTitle(p),
-    brand: gBrand(p),
-    thumbnail: gImage(p),
-    thumbnails: gThumbs(p),
-    price: gPrice(p),
+    asin:          p.asin,
+    slug:          p.slug,
+    title:         gTitle(p),
+    brand:         gBrand(p),
+    thumbnail:     gImage(p),
+    thumbnails:    gThumbs(p),
+    price:         gPrice(p),
     originalPrice: gOldPx(p),
-    discountPct: gDisc(p),
-    avgRating: gRating(p),
-    reviewCount: gReviews(p),
-    isPrime: gPrime(p),
-    inStock: gInStock(p),
-    isOnSale: gOnSale(p),
-    badges: gBadges(p).slice(0, 3),
-    dept: gDept(p),
-    subcat: gSubcat(p),
+    discountPct:   gDisc(p),
+    avgRating:     gRating(p),
+    reviewCount:   gReviews(p),
+    isPrime:       gPrime(p),
+    inStock:       gInStock(p),
+    isOnSale:      gOnSale(p),
+    badges:        gBadges(p).slice(0, 3),
+    dept:          gDept(p),
+    subcat:        gSubcat(p),
   }
 }
 
@@ -115,10 +116,10 @@ export class ProductsService implements OnModuleInit {
   private loadingPromise: Promise<void> | null = null
 
   constructor(
-    private readonly db: DatabaseService,
-    private readonly cache: CacheService,
-    private readonly redis: RedisService,
-    private readonly algolia: AlgoliaService,
+    private readonly db:         DatabaseService,
+    private readonly cache:      CacheService,
+    private readonly redis:      RedisService,
+    private readonly algolia:    AlgoliaService,
     private readonly categories: CategoriesService,
   ) {}
 
@@ -178,10 +179,8 @@ export class ProductsService implements OnModuleInit {
   }
 
   async invalidate() {
-    this.cache
-      .keys()
-      .filter((k: string) => k.startsWith('products:') || k.startsWith('homepage:'))
-      .forEach((k: string) => this.cache.del(k))
+    this.cache.delByPrefix('products:')
+    this.cache.delByPrefix('homepage:')
     await this.loadProducts()
     await this.redis.publish('products:invalidate', Date.now().toString())
   }
@@ -262,23 +261,40 @@ export class ProductsService implements OnModuleInit {
       minMatchCharLength: 2,
     })
     return fuse.search(q.trim(), { limit }).map(({ item }: any) => ({
-      asin: item.asin,
-      slug: item.slug,
-      title: gTitle(item),
-      brand: gBrand(item),
+      asin:      item.asin,
+      slug:      item.slug,
+      title:     gTitle(item),
+      brand:     gBrand(item),
       thumbnail: gImage(item),
-      price: gPrice(item),
+      price:     gPrice(item),
       avgRating: gRating(item),
-      dept: gDept(item),
+      dept:      gDept(item),
     }))
   }
 
   async findAll(query: FilterProductsDto) {
+    // ── Two-tier cache check (L1 NodeCache + L2 Redis/Upstash) ───────────────
+    // Stable key: sort query keys so {a:1,b:2} and {b:2,a:1} hit the same entry
+    const sortedQuery = Object.keys(query as any)
+      .sort()
+      .reduce((acc: any, k) => { acc[k] = (query as any)[k]; return acc }, {})
+    const cacheKey = `products:search:${JSON.stringify(sortedQuery)}`
+
+    const cached = await this.cache.getAsync<any>(cacheKey)
+    if (cached) {
+      return { data: cached.value, cacheHit: true, cacheTier: cached.tier }
+    }
+
+    // ── Cache miss — run Algolia search ──────────────────────────────────────
     await this.ensureLoaded()
-    await this.categories.ensureLoaded()   // guard: categories load in parallel with products
+    await this.categories.ensureLoaded()
     const categories = this.categories.findAll()
     const result = await this.algolia.fullSearch(query as any, this.products, categories)
-    return { data: result.data, cacheHit: false }
+
+    // Persist to both L1 (NodeCache) and L2 (Redis/Upstash)
+    this.cache.set(cacheKey, result.data, TTL.PRODUCTS)
+
+    return { data: result.data, cacheHit: false, cacheTier: 'none' }
   }
 
   // ── findOne — canonical enterprise response shape ──────────────────────────
@@ -287,7 +303,7 @@ export class ProductsService implements OnModuleInit {
     const p = this.findProductBySlug(slugOrAsin) ?? this.findProductByAsin(slugOrAsin)
     if (!p)
       throw new NotFoundException({
-        code: 'PRODUCT_NOT_FOUND',
+        code:    'PRODUCT_NOT_FOUND',
         message: `Product "${slugOrAsin}" not found`,
       })
 
@@ -314,36 +330,36 @@ export class ProductsService implements OnModuleInit {
     // bought_together comes from Discovery Engine output (stored in DB column)
     const rawBt: any[] = full.bought_together ?? []
     const frequentlyBoughtWith = rawBt.slice(0, 4).map((b: any) => ({
-      asin: b.asin ?? '',
-      title: (b.title ?? '').slice(0, 80),
+      asin:      b.asin ?? '',
+      title:     (b.title ?? '').slice(0, 80),
       thumbnail: b.thumbnail ?? '',
-      price: b.price ?? b.extracted_price ?? 0,
+      price:     b.price ?? b.extracted_price ?? 0,
       avgRating: b.rating ?? 0,
-      reviews: b.reviews ?? 0,
+      reviews:   b.reviews ?? 0,
     }))
 
     const sf = full.shipping_fees ?? {}
 
     return {
-      asin: p.asin,
-      slug: p.slug,
+      asin:   p.asin,
+      slug:   p.slug,
       source: p.source ?? 'pikly',
 
       data: {
-        product_results: full.product_results ?? {},
-        purchase_options: full.purchase_options ?? {},
-        protection_plan: full.protection_plan ?? [],
-        item_specifications: full.item_specs ?? {},
-        about_item: full.about_item ?? [],
-        bought_together: rawBt,
-        related_products: full.related_products ?? [],
-        videos: full.videos ?? [],
-        product_details: full.product_details ?? {},
-        reviews_information: full.reviews_info ?? {},
-        category: full.category_breadcrumb ?? [],
-        accordionContent: full.accordion_content ?? [],
-        shippingFees: sf,
-        bestsellers_rank: p.bestsellers_rank ?? [],
+        product_results:     full.product_results     ?? {},
+        purchase_options:    full.purchase_options    ?? {},
+        protection_plan:     full.protection_plan     ?? [],
+        item_specifications: full.item_specs          ?? {},
+        about_item:          full.about_item          ?? [],
+        bought_together:     rawBt,
+        related_products:    full.related_products    ?? [],
+        videos:              full.videos              ?? [],
+        product_details:     full.product_details     ?? {},
+        reviews_information: full.reviews_info        ?? {},
+        category:            full.category_breadcrumb ?? [],
+        accordionContent:    full.accordion_content   ?? [],
+        shippingFees:        sf,
+        bestsellers_rank:    p.bestsellers_rank       ?? [],
       },
 
       // enrichment_source_data: pikly-specific enrichment context.
@@ -352,34 +368,34 @@ export class ProductsService implements OnModuleInit {
       enrichment_source_data: full.enrichment_source_data ?? {},
 
       _taxonomy: {
-        department: p.taxonomy_dept ?? '',
+        department:  p.taxonomy_dept  ?? '',
         subcategory: p.taxonomy_subcat ?? '',
       },
 
       _flags: buildFlags(p),
 
       _computed: {
-        title: gTitle(p),
-        brand: gBrand(p),
-        mainImage: gImage(p),
-        thumbnails: gThumbs(p),
-        price: gPrice(p),
+        title:         gTitle(p),
+        brand:         gBrand(p),
+        mainImage:     gImage(p),
+        thumbnails:    gThumbs(p),
+        price:         gPrice(p),
         originalPrice: gOldPx(p),
-        discountPct: gDisc(p),
-        avgRating: gRating(p),
-        reviewCount: gReviews(p),
-        badges: gBadges(p),
-        inStock: gInStock(p),
-        isPrime: gPrime(p),
-        stockStatus: gInStock(p) ? 'in_stock' : 'out_of_stock',
+        discountPct:   gDisc(p),
+        avgRating:     gRating(p),
+        reviewCount:   gReviews(p),
+        badges:        gBadges(p),
+        inStock:       gInStock(p),
+        isPrime:       gPrime(p),
+        stockStatus:   gInStock(p) ? 'in_stock' : 'out_of_stock',
         deliveryEstimate: {
-          options: sf.deliveryOptions ?? full.product_results?.delivery ?? [],
-          isFree: sf.isFreeShipping ?? gPrime(p),
-          isPrime: gPrime(p),
-          soldBy: sf.soldBy ?? '',
-          shipsFrom: sf.shipsFrom ?? '',
+          options:    sf.deliveryOptions ?? full.product_results?.delivery ?? [],
+          isFree:     sf.isFreeShipping  ?? gPrime(p),
+          isPrime:    gPrime(p),
+          soldBy:     sf.soldBy          ?? '',
+          shipsFrom:  sf.shipsFrom       ?? '',
         },
-        relatedProducts: related,
+        relatedProducts:      related,
         frequentlyBoughtWith,
       },
     }
@@ -420,8 +436,8 @@ export class ProductsService implements OnModuleInit {
     return {
       reviews: smartPaginate(reviews, { page: Number(page), limit: Number(limit) }),
       summary: {
-        average: gRating(p),
-        total: gReviews(p),
+        average:      gRating(p),
+        total:        gReviews(p),
         distribution: ri.summary?.customer_reviews ?? {},
       },
     }
@@ -433,7 +449,7 @@ export class ProductsService implements OnModuleInit {
     const p = this.findProductBySlug(slugOrAsin) ?? this.findProductByAsin(slugOrAsin)
     if (!p)
       throw new NotFoundException({
-        code: 'PRODUCT_NOT_FOUND',
+        code:    'PRODUCT_NOT_FOUND',
         message: `Product "${slugOrAsin}" not found`,
       })
 
@@ -443,7 +459,7 @@ export class ProductsService implements OnModuleInit {
     )
     if (exists)
       throw new BadRequestException({
-        code: 'REVIEW_DUPLICATE',
+        code:    'REVIEW_DUPLICATE',
         message: 'You already reviewed this product',
       })
     await this.db.execute(
@@ -481,8 +497,8 @@ export class ProductsService implements OnModuleInit {
       ),
     ])
     return {
-      docs: rows,
-      total: ct?.cnt ?? 0,
+      docs:       rows,
+      total:      ct?.cnt ?? 0,
       page,
       limit,
       totalPages: Math.ceil((ct?.cnt ?? 0) / limit),
@@ -497,15 +513,15 @@ export class ProductsService implements OnModuleInit {
       [
         asin,
         slug,
-        data.title ?? '',
-        data.brand ?? '',
-        data.price ?? 0,
+        data.title         ?? '',
+        data.brand         ?? '',
+        data.price         ?? 0,
         data.originalPrice ?? null,
-        data.discountPct ?? 0,
-        data.thumbnail ?? null,
-        data.taxonomyDept ?? '',
+        data.discountPct   ?? 0,
+        data.thumbnail     ?? null,
+        data.taxonomyDept  ?? '',
         data.taxonomySubcat ?? '',
-        data.isActive ?? true,
+        data.isActive      ?? true,
       ],
     )
     await this.invalidate()

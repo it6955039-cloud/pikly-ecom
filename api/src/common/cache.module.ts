@@ -1,14 +1,13 @@
-import { Global, Module } from '@nestjs/common'
-import { CacheService } from './cache.service'
+// src/common/cache.module.ts
+// CacheService now depends on RedisService for L2 — RedisModule is @Global
+// so no explicit import needed here.
 
-// @Global makes CacheService available everywhere as a single shared instance.
-// No module needs to import CacheModule or declare CacheService in providers —
-// it just injects CacheService directly. This means when ProductsService calls
-// cache.flush(), it clears the same cache that HomepageService and
-// CategoriesService read from, so stale data never survives an admin update.
+import { Global, Module } from '@nestjs/common'
+import { CacheService }   from './cache.service'
+
 @Global()
 @Module({
   providers: [CacheService],
-  exports: [CacheService],
+  exports:   [CacheService],
 })
 export class CacheModule {}
