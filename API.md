@@ -1,6 +1,6 @@
 # API Reference
 
-Base URL: `http://localhost:3000`  
+Base URL: `http://localhost:3000`
 All endpoints: `/api/*` (except `/health`)
 
 Authentication: `Authorization: Bearer <jwt_token>`
@@ -249,12 +249,67 @@ Products filtered by category slug. Matches on `cat_lvl0` or `taxonomy_dept`.
 ## Homepage
 
 ### GET /api/homepage
-Complete homepage data in a single request: banners, featured products, best sellers, trending, new arrivals, on-sale, top-rated, featured categories, department spotlights.
-
-Cached in-memory for 5 minutes.
+Complete homepage data in a single request: banners, featured products, best sellers, trending, new arrivals, on-sale, top-rated, featured categories, department spotlights. Cached in-memory for 5 minutes.
 
 ### GET /api/homepage/banners
-Active homepage banners only.
+Active homepage banners only. Filter by `?position=hero|secondary|sidebar`.
+
+### GET /api/homepage/widgets
+**Page composition API** — dynamic, admin-configurable alternative to `GET /api/homepage`.
+
+Optionally authenticated (`Authorization: Bearer <token>`). Authenticated users also receive widgets with `target="authenticated"`. Anonymous visitors receive `target="all"` and `target="anonymous"` widgets only.
+
+Each item in the response array:
+```json
+{
+  "id": "hw_featured",
+  "type": "product_carousel",
+  "title": "Featured Picks",
+  "subtitle": null,
+  "badge": null,
+  "position": 2,
+  "target": "all",
+  "data": { "products": [...], "strategy": "featured", "count": 12 }
+}
+```
+
+Widget types and their `data` shape:
+
+| type | data keys |
+|---|---|
+| `hero_banner` | `{ banners[], bannerPosition }` |
+| `product_carousel` | `{ products[], strategy, count }` |
+| `category_grid` | `{ cells[], filterDept, filterMaxPrice, cellCount }` |
+| `dept_spotlight` | `{ dept, products[], count }` |
+| `campaign` | `{ products[], strategy, filterDept, count }` |
+
+Cached in-memory per audience (auth/anon) for 5 minutes. Invalidated via Redis pub/sub on any admin mutation.
+
+### GET /api/homepage/personalized
+**Requires authentication.** Returns four personalized sections for the authenticated user.
+
+| Section | Strategy |
+|---|---|
+| `continueShoppingFor` | Recently viewed items not yet purchased |
+| `basedOnBrowsingHistory` | Top-rated products from user's most-visited departments (Wilson score: `rating × log(reviews)`) |
+| `alsoViewed` | Item-item collaborative filtering via SQL co-occurrence |
+| `moreToConsider` | Trending products in user's affinity departments |
+
+All sections fall back to global signals when the user has no browsing history. Results are cached per-user in Redis for 5 minutes, evicted automatically on new product views.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "continueShoppingFor":    { "label": "Continue Shopping For",         "strategy": "continue_shopping",       "products": [...], "count": 8  },
+    "basedOnBrowsingHistory": { "label": "Based on Your Browsing History","strategy": "history_dept_affinity",   "products": [...], "count": 16 },
+    "alsoViewed":             { "label": "Customers Also Viewed",         "strategy": "collaborative_filtering", "products": [...], "count": 12 },
+    "moreToConsider":         { "label": "More to Consider",              "strategy": "more_to_consider",        "products": [...], "count": 16 },
+    "meta": { "userId": "uuid", "hasHistory": true, "topDepts": ["Electronics"], "computedAt": "...", "fromCache": false }
+  }
+}
+```
 
 ---
 
@@ -432,6 +487,40 @@ All admin endpoints require `Authorization: Bearer <admin_jwt>`.
 - `POST /api/admin/banners`
 - `PATCH /api/admin/banners/:id`
 - `DELETE /api/admin/banners/:id`
+
+### Homepage Widgets
+Admin CRUD + reorder for homepage widget slots.
+
+- `GET /api/admin/homepage-widgets` — list all slots (active + inactive) ordered by position
+- `POST /api/admin/homepage-widgets` — create a new slot
+- `PATCH /api/admin/homepage-widgets/reorder` — atomic bulk reorder (transaction); body: `{ "ids": ["hw_hero", "hw_featured", ...] }`
+- `GET /api/admin/homepage-widgets/:id` — single slot
+- `PATCH /api/admin/homepage-widgets/:id` — update any field
+- `PATCH /api/admin/homepage-widgets/:id/toggle` — flip `is_active`
+- `DELETE /api/admin/homepage-widgets/:id` — hard delete
+
+**Create / Update body fields:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `type` | string | create only | `hero_banner` \| `product_carousel` \| `category_grid` \| `dept_spotlight` \| `campaign` |
+| `config` | object | create only | Type-specific config — see below |
+| `title` | string | — | Display title |
+| `subtitle` | string | — | Display subtitle |
+| `badge` | string | — | Badge label e.g. `"Limited Time"` |
+| `position` | integer | — | Display order (lower = higher). Use reorder endpoint for bulk operations |
+| `isActive` | boolean | — | Defaults to `true` |
+| `target` | string | — | `all` \| `authenticated` \| `anonymous` |
+
+**Config examples by type:**
+```json
+{ "type": "hero_banner",      "config": { "bannerPosition": "hero" } }
+{ "type": "product_carousel", "config": { "strategy": "bestsellers", "limit": 12 } }
+{ "type": "product_carousel", "config": { "strategy": "by_dept", "dept": "Electronics", "limit": 8 } }
+{ "type": "category_grid",    "config": { "dept": "Home & Kitchen", "maxPrice": 50, "limit": 4, "productsPerCell": 2 } }
+{ "type": "dept_spotlight",   "config": { "dept": "Beauty", "limit": 4 } }
+{ "type": "campaign",         "config": { "strategy": "on_sale", "dept": "Fashion", "limit": 8 } }
+```
 
 ### Analytics
 - `GET /api/admin/analytics/overview` — product counts, order totals, revenue

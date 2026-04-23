@@ -208,3 +208,75 @@ If anything fails after Step 6:
 3. Re-run ingest with original `products_cleaned.jsonl`
 
 The new Neon account means the old account is untouched — zero risk.
+
+---
+
+## Step 8 — Homepage Widget Slots (003_homepage_widgets.sql)
+
+This step is **additive only** — no existing tables are modified.
+
+### Run the migration
+
+```bash
+psql $DATABASE_URL -f api/sql/003_homepage_widgets.sql
+```
+
+### What it creates
+
+| Object | Type | Notes |
+|---|---|---|
+| `store.homepage_widgets` | Table | Widget slot config rows |
+| `idx_hw_active_position` | Index | Covers `WHERE is_active=true ORDER BY position` |
+| 8 seed rows | Data | Reproduces current hardcoded homepage sections |
+
+### Verify
+
+```sql
+-- 1. Table exists and has seed rows
+SELECT id, type, title, position, is_active, target
+FROM store.homepage_widgets
+ORDER BY position;
+-- Expect: 8 rows (hw_hero → hw_secondary)
+
+-- 2. Index was created
+SELECT indexname FROM pg_indexes
+WHERE tablename = 'homepage_widgets';
+-- Expect: idx_hw_active_position
+
+-- 3. New endpoints respond
+-- GET /api/homepage/widgets          → 200, data array with 8 items
+-- GET /api/homepage/personalized     → 401 (requires JWT — correct)
+-- GET /api/admin/homepage-widgets    → 401 (requires admin JWT — correct)
+```
+
+### Rollback (if needed)
+
+```sql
+DROP TABLE IF EXISTS store.homepage_widgets;
+```
+
+The existing `GET /api/homepage` endpoint is completely unaffected — it does not
+read from this table. The widget system is fully parallel.
+
+---
+
+## New Files Added (v5.1.0)
+
+| File | Type | Purpose |
+|---|---|---|
+| `api/sql/003_homepage_widgets.sql` | SQL | Migration — widget slots table + seed |
+| `api/src/homepage/dto/homepage-widget.dto.ts` | TS | CreateWidgetDto, UpdateWidgetDto, ReorderWidgetsDto |
+| `api/src/homepage/homepage-widgets.service.ts` | TS | Widget resolution engine |
+| `api/src/homepage/homepage-personalization.service.ts` | TS | P13N engine (collaborative filtering) |
+| `api/src/admin/admin-homepage-widgets.controller.ts` | TS | Admin CRUD + reorder |
+| `api/src/homepage/tests/homepage-widgets.service.spec.ts` | TS | 30 unit tests |
+| `api/src/homepage/tests/homepage-personalization.service.spec.ts` | TS | 23 unit tests |
+
+**Modified files (additive only — zero breaking changes):**
+
+| File | What changed |
+|---|---|
+| `api/src/homepage/homepage.controller.ts` | +2 GET routes (`/widgets`, `/personalized`) |
+| `api/src/homepage/homepage.module.ts` | +2 providers registered |
+| `api/src/admin/admin.module.ts` | +1 controller registered |
+| `api/src/recently-viewed/recently-viewed.service.ts` | +Redis publish on track() for P13N cache invalidation |

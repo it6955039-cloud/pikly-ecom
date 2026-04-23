@@ -1,15 +1,23 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, Logger } from '@nestjs/common'
 import { DatabaseService } from '../database/database.service'
 import { ProductsService } from '../products/products.service'
+import { RedisService } from '../redis/redis.service'
 import { smartPaginate } from '../common/api-utils'
 
 const MAX_RECENT = 20
 
+// Redis channel consumed by PersonalizationService to flush per-user P13N cache.
+// Payload: JSON string '{"userId":"<uuid>"}'
+const P13N_INVALIDATE_CHANNEL = 'p13n:user:viewed'
+
 @Injectable()
 export class RecentlyViewedService {
+  private readonly logger = new Logger(RecentlyViewedService.name)
+
   constructor(
-    private readonly db:       DatabaseService,
+    private readonly db: DatabaseService,
     private readonly products: ProductsService,
+    private readonly redis: RedisService, // @Global — no module import needed
   ) {}
 
   async track(userId: string, asin: string) {
@@ -28,6 +36,14 @@ export class RecentlyViewedService {
        )`,
       [userId, MAX_RECENT],
     )
+
+    // Signal PersonalizationService to invalidate the stale P13N cache for this user.
+    // Fire-and-forget — a Redis failure here must never fail the track() call itself.
+    this.redis
+      .publish(P13N_INVALIDATE_CHANNEL, JSON.stringify({ userId }))
+      .catch((err) =>
+        this.logger.warn(`P13N invalidation publish failed for user ${userId}: ${err.message}`),
+      )
   }
 
   async getRecentlyViewed(userId: string, limit = 10) {
@@ -35,11 +51,13 @@ export class RecentlyViewedService {
       'SELECT asin, viewed_at FROM store.recently_viewed WHERE user_id=$1 ORDER BY viewed_at DESC LIMIT $2',
       [userId, limit],
     )
-    return rows.map(r => ({
-      asin: r.asin,
-      viewedAt: r.viewed_at,
-      product: this.products.findProductByAsin(r.asin) ?? null,
-    })).filter(r => r.product)
+    return rows
+      .map((r) => ({
+        asin: r.asin,
+        viewedAt: r.viewed_at,
+        product: this.products.findProductByAsin(r.asin) ?? null,
+      }))
+      .filter((r) => r.product)
   }
 
   async getRecent(userId: string, opts: { page?: number; limit?: number; cursor?: string } = {}) {
