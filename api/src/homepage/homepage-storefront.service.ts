@@ -130,6 +130,13 @@ export class HomepageStorefrontService implements OnModuleInit {
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
+  // In-flight deduplication — prevents race condition where simultaneous requests
+  // all find empty cache and all build in parallel, all returning cacheHit:false.
+  // With this: only the FIRST miss triggers a build; all subsequent simultaneous
+  // requests await the same Promise and also get cacheHit:false (correct — they
+  // are part of the same cold-start batch), but only ONE build runs.
+  private buildInFlight: Promise<StorefrontPayload> | null = null
+
   async getStorefront(): Promise<{ payload: StorefrontPayload; cacheHit: boolean; cacheTier: string }> {
     // L1 + L2 two-tier cache check
     const cached = await this.cache.getAsync<StorefrontPayload>(CACHE_KEY)
@@ -137,10 +144,16 @@ export class HomepageStorefrontService implements OnModuleInit {
       return { payload: cached.value, cacheHit: true, cacheTier: cached.tier }
     }
 
-    // Cache miss — build from scratch
-    const payload = await this.buildStorefront()
+    // Cache miss — deduplicate concurrent builds
+    if (!this.buildInFlight) {
+      this.buildInFlight = this.buildStorefront().finally(() => {
+        this.buildInFlight = null
+      })
+    }
 
-    // Persist to both tiers
+    const payload = await this.buildInFlight
+
+    // Persist to both tiers (idempotent — safe to call multiple times)
     this.cache.set(CACHE_KEY, payload, TTL.STOREFRONT)
 
     return { payload, cacheHit: false, cacheTier: 'none' }

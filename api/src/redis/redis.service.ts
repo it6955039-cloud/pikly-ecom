@@ -54,7 +54,7 @@ export class RedisService implements OnModuleDestroy {
       enableOfflineQueue: false,
       maxRetriesPerRequest: 2,
       connectTimeout: 4_000, // ms — abort connect attempt after 4 s
-      commandTimeout: 2_000, // ms — individual command timeout
+      commandTimeout: 8_000, // ms — individual command timeout
       lazyConnect: false,
       // ioredis auto-enables TLS for "rediss://" scheme (Upstash free tier).
       // No extra tls:{} block needed — the URL scheme is sufficient.
