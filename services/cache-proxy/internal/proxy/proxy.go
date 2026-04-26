@@ -236,7 +236,7 @@ func (h *Handler) doUpstream(c *gin.Context) (*http.Response, []byte, error) {
 	return resp, body, err
 }
 
-// forward proxies a request without caching (used for write methods).
+//  forward proxies a request without caching (used for write methods).
 func (h *Handler) forward(c *gin.Context) {
 	resp, body, err := h.doUpstream(c)
 	if err != nil {
