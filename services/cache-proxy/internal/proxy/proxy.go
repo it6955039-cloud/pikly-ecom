@@ -126,7 +126,22 @@ func (h *Handler) Proxy() gin.HandlerFunc {
 
 // ── Read path ────────────────────────────────────────────────────────────────
 
+// noCachePath returns true for paths that must never be served from cache.
+// API documentation reflects live code and must always be fresh.
+func noCachePath(path string) bool {
+	return path == "/api/docs" ||
+		strings.HasPrefix(path, "/api/docs/") ||
+		path == "/health" ||
+		strings.HasPrefix(path, "/health")
+}
+
 func (h *Handler) serveWithCache(c *gin.Context, path, query string) {
+	// Bypass cache entirely for docs and health — always proxy through to upstream.
+	if noCachePath(path) {
+		h.forward(c)
+		return
+	}
+
 	key := cacheKey(c.Request.Method, path, query)
 
 	if hit := h.store.Get(c.Request.Context(), key); hit != nil {
