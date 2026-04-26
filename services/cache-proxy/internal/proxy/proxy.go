@@ -128,9 +128,17 @@ func (h *Handler) Proxy() gin.HandlerFunc {
 
 // noCachePath returns true for paths that must never be served from cache.
 // API documentation reflects live code and must always be fresh.
+// NestJS SwaggerModule exposes three doc URLs:
+//   /api/docs        → HTML page
+//   /api/docs-json   → OpenAPI JSON spec (fetched by Swagger UI in browser)
+//   /api/docs-yaml   → OpenAPI YAML spec
+// All three must bypass cache, otherwise the browser gets stale spec JSON
+// even after the API is redeployed with new routes.
 func noCachePath(path string) bool {
 	return path == "/api/docs" ||
 		strings.HasPrefix(path, "/api/docs/") ||
+		path == "/api/docs-json" ||
+		path == "/api/docs-yaml" ||
 		path == "/health" ||
 		strings.HasPrefix(path, "/health")
 }
@@ -236,7 +244,7 @@ func (h *Handler) doUpstream(c *gin.Context) (*http.Response, []byte, error) {
 	return resp, body, err
 }
 
-//  forward proxies a request without caching (used for write methods).
+// forward proxies a request without caching (used for write methods).
 func (h *Handler) forward(c *gin.Context) {
 	resp, body, err := h.doUpstream(c)
 	if err != nil {
