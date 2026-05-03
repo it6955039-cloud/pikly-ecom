@@ -27,27 +27,30 @@
 //   • Co-occurrence SQL matches v1 exactly — battle-tested query
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common'
-import { DatabaseService }             from '../database/database.service'
-import { RedisService }                from '../redis/redis.service'
-import { ProductsService }             from '../products/products.service'
+import { DatabaseService } from '../database/database.service'
+import { RedisService } from '../redis/redis.service'
+import { ProductsService } from '../products/products.service'
 import { HomepageStorefrontV2Service } from './homepage-storefront-v2.service'
 import type { PersonalizationBundle, PersonalizedSlot } from './types/storefront-v2.types'
 
-const P13N_TTL     = 5 * 60          // 5 min per-user Redis TTL
-const SIGNAL_WIN   = 20              // how many recently-viewed rows to use
+const P13N_TTL = 5 * 60 // 5 min per-user Redis TTL
+const SIGNAL_WIN = 20 // how many recently-viewed rows to use
 const CACHE_PREFIX = 'p13n:v2:homepage:'
-const INVAL_CHAN   = 'p13n:user:viewed'
+const INVAL_CHAN = 'p13n:user:viewed'
 
-interface RecentRow { asin: string; viewed_at: Date }
+interface RecentRow {
+  asin: string
+  viewed_at: Date
+}
 
 @Injectable()
 export class PersonalizationV2Service implements OnModuleInit {
   private readonly logger = new Logger(PersonalizationV2Service.name)
 
   constructor(
-    private readonly db:         DatabaseService,
-    private readonly redis:      RedisService,
-    private readonly products:   ProductsService,
+    private readonly db: DatabaseService,
+    private readonly redis: RedisService,
+    private readonly products: ProductsService,
     private readonly storefront: HomepageStorefrontV2Service,
   ) {}
 
@@ -57,9 +60,11 @@ export class PersonalizationV2Service implements OnModuleInit {
       try {
         const { userId } = JSON.parse(msg) as { userId: string }
         if (userId) {
-          this.redis.del(`${CACHE_PREFIX}${userId}`).catch((err: Error) =>
-            this.logger.warn(`P13N v2 eviction failed for ${userId}: ${err.message}`),
-          )
+          this.redis
+            .del(`${CACHE_PREFIX}${userId}`)
+            .catch((err: Error) =>
+              this.logger.warn(`P13N v2 eviction failed for ${userId}: ${err.message}`),
+            )
         }
       } catch {
         this.logger.warn(`Malformed P13N invalidation message: ${msg}`)
@@ -85,10 +90,10 @@ export class PersonalizationV2Service implements OnModuleInit {
 
     await this.products.ensureLoaded()
 
-    const recentRows  = await this.fetchRecentRows(userId, SIGNAL_WIN)
+    const recentRows = await this.fetchRecentRows(userId, SIGNAL_WIN)
     const recentAsins = recentRows.map((r) => r.asin)
-    const hasHistory  = recentAsins.length > 0
-    const topDepts    = hasHistory ? this.deriveTopDepts(recentAsins, 3) : []
+    const hasHistory = recentAsins.length > 0
+    const topDepts = hasHistory ? this.deriveTopDepts(recentAsins, 3) : []
 
     // All four slots in parallel — same p99 as the slowest query
     const [continueShoppingFor, basedOnBrowsingHistory, alsoViewed, moreToConsider] =
@@ -108,7 +113,7 @@ export class PersonalizationV2Service implements OnModuleInit {
       alsoViewed,
       moreToConsider,
       computedAt: new Date().toISOString(),
-      fromCache:  false,
+      fromCache: false,
     }
 
     // Write to Redis — fire and forget, never block the response
@@ -158,7 +163,12 @@ export class PersonalizationV2Service implements OnModuleInit {
       return this.globalFallback('continue', 'Continue shopping for', 8)
     }
 
-    return { label: 'Continue shopping for', strategy: 'continue', products, count: products.length }
+    return {
+      label: 'Continue shopping for',
+      strategy: 'continue',
+      products,
+      count: products.length,
+    }
   }
 
   /**
@@ -184,7 +194,12 @@ export class PersonalizationV2Service implements OnModuleInit {
       return this.globalFallback('history_based', 'Based on your browsing history', 12)
     }
 
-    return { label: 'Based on your browsing history', strategy: 'history_based', products, count: products.length }
+    return {
+      label: 'Based on your browsing history',
+      strategy: 'history_based',
+      products,
+      count: products.length,
+    }
   }
 
   /**
@@ -202,7 +217,7 @@ export class PersonalizationV2Service implements OnModuleInit {
     try {
       // Co-occurrence: which ASINs do other users view alongside the user's recent items?
       // Uses positional parameterization — recentAsins sliced to 5 to keep query fast.
-      const params  = recentAsins.slice(0, 5)
+      const params = recentAsins.slice(0, 5)
       const pHolders = params.map((_, i) => `$${i + 2}`).join(', ')
 
       const coRows = await this.db.query<{ asin: string; score: string }>(
@@ -220,7 +235,7 @@ export class PersonalizationV2Service implements OnModuleInit {
         [userId, ...params],
       )
 
-      const seen     = new Set(recentAsins)
+      const seen = new Set(recentAsins)
       const products = coRows
         .filter((r) => !seen.has(r.asin))
         .map((r) => this.products.findProductByAsin(r.asin))
@@ -229,7 +244,12 @@ export class PersonalizationV2Service implements OnModuleInit {
         .map((p: any) => this.storefront.toCardV2(p, 'also_viewed_grid', 'also_viewed'))
 
       if (products.length >= 4) {
-        return { label: 'Customers also viewed', strategy: 'also_viewed', products, count: products.length }
+        return {
+          label: 'Customers also viewed',
+          strategy: 'also_viewed',
+          products,
+          count: products.length,
+        }
       }
     } catch (err: any) {
       this.logger.warn(`Co-occurrence query failed: ${err.message}`)
@@ -251,8 +271,9 @@ export class PersonalizationV2Service implements OnModuleInit {
       .filter((p: any) => {
         if (!p.is_active) return false
         const dept = (p.taxonomy_dept ?? '').toLowerCase()
-        return (p.is_trending || p.is_amazon_choice) &&
-          topDepts.some((d) => d.toLowerCase() === dept)
+        return (
+          (p.is_trending || p.is_amazon_choice) && topDepts.some((d) => d.toLowerCase() === dept)
+        )
       })
       .sort((a: any, b: any) => (b.avg_rating ?? 0) - (a.avg_rating ?? 0))
       .slice(0, 16)
@@ -262,7 +283,12 @@ export class PersonalizationV2Service implements OnModuleInit {
       return this.globalFallback('more_to_consider', 'More items to consider', 12)
     }
 
-    return { label: 'More items to consider', strategy: 'more_to_consider', products, count: products.length }
+    return {
+      label: 'More items to consider',
+      strategy: 'more_to_consider',
+      products,
+      count: products.length,
+    }
   }
 
   // ── DB helpers ───────────────────────────────────────────────────────────────
@@ -328,6 +354,9 @@ export class PersonalizationV2Service implements OnModuleInit {
       if (!dept) continue
       map.set(dept, (map.get(dept) ?? 0) + 1)
     }
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([d]) => d)
+    return [...map.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topN)
+      .map(([d]) => d)
   }
 }

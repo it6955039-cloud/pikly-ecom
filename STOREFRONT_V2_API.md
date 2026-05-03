@@ -475,7 +475,7 @@ Every product in every section uses this exact shape. No exceptions.
   "title":      "Sony WH-1000XM5 Wireless Noise Canceling Headphones",
   "brand":      "Sony",
   "thumbnail":  "https://cdn.pikly.com/products/B09G9FPHY6/main.jpg",
-  "thumbnails": [ "...hover1.jpg", "...hover2.jpg" ],
+  "thumbnailAlt": "https://cdn.pikly.com/products/B09G9FPHY6/hover.jpg",  // null if no second image
 
   // ── Taxonomy ──────────────────────────────────────────────────────────────
   "dept":   "Electronics",

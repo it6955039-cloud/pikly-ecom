@@ -37,7 +37,7 @@ import { CategoriesService }   from '../categories/categories.service'
 import { DatabaseService }     from '../database/database.service'
 
 import type {
-  StorefrontV2Response, AnySection, PageContext, NavigationContext, NavDepartment,
+  StorefrontV2Response, AnySection, PageContext,
   ProductCardV2, ProductBadge, BadgeType, StockSignal, DeliveryPromise, DealInfo,
   DealType, CategoryRank, HeroBannerSection, HeroBannerSlide, QuadMosaicRowSection,
   MosaicPanel, MosaicCell, ProductCarouselSection, CarouselStrategy, DealGridSection,
@@ -47,7 +47,6 @@ import type {
 } from './types/storefront-v2.types'
 
 const CACHE_KEY_BASE    = 'homepage:storefront:v2:base'
-const CACHE_KEY_NAV     = 'homepage:storefront:v2:nav'
 const CACHE_KEY_BANNERS = 'homepage:banners:all'
 
 const DELIVERY_DAYS   = { prime: 1, default: 3 } as const
@@ -71,7 +70,6 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
   async onModuleInit() {
     this.redis.subscribe('homepage:invalidate', () => {
       this.cache.del(CACHE_KEY_BASE)
-      this.cache.del(CACHE_KEY_NAV)
       this.cache.del(CACHE_KEY_BANNERS)
       this.logger.log('Storefront v2 cache invalidated')
     })
@@ -131,7 +129,6 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
     const response: StorefrontV2Response = {
       schema: 'pikly_storefront_v2',
       page:   base.page,
-      nav:    base.nav,
       sections,
       personalization: ctx.personalization,
       meta: {
@@ -156,7 +153,6 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
 
   invalidate() {
     this.cache.del(CACHE_KEY_BASE)
-    this.cache.del(CACHE_KEY_NAV)
     this.cache.del(CACHE_KEY_BANNERS)
   }
 
@@ -186,7 +182,6 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
 
     const deptMap  = buildDeptMap(raw)
     const topDepts = [...deptMap.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 12)
-    const nav      = await this.buildNav(deptMap)
     const page     = this.buildPageContext(activeCampaign)
 
     const sections: AnySection[] = []
@@ -211,7 +206,20 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
 
     if (bestsellers.length) sections.push(this.buildCarousel('carousel_bestsellers', 'Best Sellers', 'Our most popular products based on sales', '🔥 Best Sellers', '/products?bestsellers=true', 'bestsellers', null, bestsellers.map((p) => this.toCardV2(p, 'carousel_bestsellers', 'bestsellers')), pos++, false))
 
-    if (bestsellers.length >= 4) sections.push(this.buildBestsellerList(this.findTopBestsellerCat(bestsellers), bestsellers.slice(0, 12), pos++))
+    if (bestsellers.length >= 4) {
+      const topCat     = this.findTopBestsellerCat(raw)
+      // Filter raw store for products in that category, sorted by rating — NOT the cross-category bestsellers[] mix
+      const catProducts = raw
+        .filter((p: any) => (p.taxonomy_subcat ?? p.taxonomy_dept ?? '') === topCat)
+        .sort((a: any, b: any) => (b.avg_rating ?? 0) - (a.avg_rating ?? 0))
+        .slice(0, 12)
+      // Only emit the section when we have enough real products from that category
+      if (catProducts.length >= 4) {
+        sections.push(this.buildBestsellerList(topCat, catProducts, pos++))
+      } else {
+        pos++ // still advance position counter
+      }
+    }
 
     const q3 = this.buildQuadMosaicRow('quad_row_3', topDepts.slice(8, 12), pos++, true)
     if (q3) sections.push(q3)
@@ -230,7 +238,7 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
     const secondary = bannerRows.filter((b: any) => b.position === 'secondary')
     if (secondary.length) sections.push(this.buildHeroBanners('banner_secondary', secondary, pos++, true))
 
-    const result: BasePayload = { page, nav, sections: sections.sort((a, b) => a.position - b.position), nextPosition: pos }
+    const result: BasePayload = { page, sections: sections.sort((a, b) => a.position - b.position), nextPosition: pos }
     this.logger.log(`Storefront v2 base built: ${sections.length} sections in ${Date.now() - t0}ms`)
     return result
   }
@@ -371,7 +379,8 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
       return {
         asin: p.asin, slug: p.slug,
         title: p.title ?? '', brand: (p.brand ?? '').replace(/^Visit the\s+|\s+Store\s*$/gi, '').trim(),
-        thumbnail: p.thumbnail ?? '', thumbnails: Array.isArray(p.thumbnails) ? p.thumbnails : [],
+        thumbnail: p.thumbnail ?? '',
+        thumbnailAlt: Array.isArray(p.thumbnails) && p.thumbnails[1] ? p.thumbnails[1] : null,
         dept: p.taxonomy_dept ?? '', subcat: p.taxonomy_subcat ?? '',
         avgRating: +(p.avg_rating ?? 0), reviewCount: p.review_count ?? 0, isPrime: p.is_prime ?? false,
         purchaseSignal: this.purchaseSignal(p), badges: this.badges(p).slice(0, 2),
@@ -488,7 +497,8 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
     return {
       asin: p.asin, slug: p.slug,
       title: p.title ?? '', brand: (p.brand ?? '').replace(/^Visit the\s+|\s+Store\s*$/gi, '').trim(),
-      thumbnail: p.thumbnail ?? '', thumbnails: Array.isArray(p.thumbnails) ? p.thumbnails : [],
+      thumbnail: p.thumbnail ?? '',
+      thumbnailAlt: Array.isArray(p.thumbnails) && p.thumbnails[1] ? p.thumbnails[1] : null,
       dept: p.taxonomy_dept ?? p.cat_lvl0 ?? '', subcat: p.taxonomy_subcat ?? p.cat_lvl1 ?? '',
       price, originalPrice: orig, discountPct: disc,
       savingsAmount: orig != null ? +(orig - price).toFixed(2) : null,
@@ -579,21 +589,6 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
     return { type, label: type === 'deal_of_the_day' ? 'Deal of the Day' : type === 'lightning_deal' ? 'Lightning Deal' : 'Price Drop', originalPrice: orig, dealPrice: price, savingsAmount: saved, savingsPct: pct, endsAt: type !== 'price_drop' ? this.nextDealRefresh(new Date()) : null, claimedPct: cp, claimedLabel: cp != null ? `${cp}% claimed` : null }
   }
 
-  // ── Navigation ────────────────────────────────────────────────────────────────
-
-  private async buildNav(deptMap: Map<string, any[]>): Promise<NavigationContext> {
-    const cached = await this.cache.getAsync<NavigationContext>(CACHE_KEY_NAV)
-    if (cached) return cached.value
-    const departments: NavDepartment[] = [...deptMap.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 20).map(([dept, products]) => {
-      const subcatMap = new Map<string, number>()
-      for (const p of products) { const sub = (p.taxonomy_subcat ?? '').trim(); if (sub) subcatMap.set(sub, (subcatMap.get(sub) ?? 0) + 1) }
-      return { slug: slug(dept), name: cap(dept), link: `/department/${slug(dept)}`, icon: null, productCount: products.length, subcategories: [...subcatMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([sub, count]) => ({ slug: slug(sub), name: cap(sub), link: `/category/${slug(sub)}`, productCount: count })) }
-    })
-    const nav: NavigationContext = { departments }
-    this.cache.set(CACHE_KEY_NAV, nav, TTL.CATEGORIES)
-    return nav
-  }
-
   private buildPageContext(campaign: RawCampaign | null): PageContext {
     return {
       title: campaign ? `${campaign.name} Deals — Pikly` : 'Pikly — Shop Electronics, Fashion, Home & More',
@@ -663,10 +658,21 @@ export class HomepageStorefrontV2Service implements OnModuleInit {
     return h > 0 ? `${h} hrs ${m} mins` : `${m} mins`
   }
 
-  private findTopBestsellerCat(bestsellers: any[]): string {
+  private findTopBestsellerCat(raw: any[]): string {
+    // Count bestseller-flagged products per subcategory across entire catalog
+    // Then pick the subcategory with the most bestsellers — this gives a
+    // meaningful ranked category strip instead of a random cross-category mix
     const map = new Map<string, number>()
-    for (const p of bestsellers) { const c = p.taxonomy_subcat ?? p.taxonomy_dept ?? 'General'; map.set(c, (map.get(c) ?? 0) + 1) }
-    return [...map.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Clothing, Shoes & Jewelry'
+    for (const p of raw) {
+      if (!(p.is_best_seller || p.is_amazon_choice)) continue
+      const cat = (p.taxonomy_subcat ?? p.taxonomy_dept ?? '').trim()
+      if (!cat) continue
+      map.set(cat, (map.get(cat) ?? 0) + 1)
+    }
+    // Need at least 4 products in a category to make a useful strip
+    const eligible = [...map.entries()].filter(([, n]) => n >= 4)
+    if (eligible.length === 0) return ''
+    return eligible.sort((a, b) => b[1] - a[1])[0][0]
   }
 
   private countProducts(sections: AnySection[]): number {
@@ -697,7 +703,7 @@ function buildDeptMap(raw: any[]): Map<string, any[]> {
 
 // ── Internal types ─────────────────────────────────────────────────────────────
 
-interface BasePayload { page: PageContext; nav: NavigationContext; sections: AnySection[]; nextPosition: number }
+interface BasePayload { page: PageContext; sections: AnySection[]; nextPosition: number }
 
 interface RawCampaign {
   id: string; name: string; headline: string; tagline: string | null; subheadline: string | null

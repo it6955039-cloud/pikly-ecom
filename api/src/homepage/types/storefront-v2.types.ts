@@ -36,9 +36,6 @@ export interface StorefrontV2Response {
   /** Page-level metadata for SSR/SEO/campaign theming */
   page: PageContext
 
-  /** Navigation bar data — departments + category mega-menu */
-  nav: NavigationContext
-
   /**
    * Ordered sections array. Frontend iterates this array and renders
    * each section using the component keyed by `section.type`.
@@ -105,10 +102,10 @@ export interface CampaignContext {
 
   /** Theme overrides — CSS custom property values */
   theme: {
-    primaryColor: string        // e.g. "#e91e8c"
-    accentColor: string         // e.g. "#ff9900"
-    heroBackground: string      // URL or CSS gradient
-    badgeLabel: string          // e.g. "Mother's Day Deal"
+    primaryColor: string // e.g. "#e91e8c"
+    accentColor: string // e.g. "#ff9900"
+    heroBackground: string // URL or CSS gradient
+    badgeLabel: string // e.g. "Mother's Day Deal"
   }
 }
 
@@ -128,29 +125,6 @@ export interface JsonLdWebSite {
 // § 3. NAVIGATION CONTEXT
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface NavigationContext {
-  /** Top-level departments for the horizontal nav bar */
-  departments: NavDepartment[]
-}
-
-export interface NavDepartment {
-  slug: string
-  name: string
-  link: string
-  icon: string | null            // icon name / SVG URL
-  productCount: number
-
-  /** Second-level subcategories for mega-menu dropdown */
-  subcategories: NavSubcategory[]
-}
-
-export interface NavSubcategory {
-  slug: string
-  name: string
-  link: string
-  productCount: number
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // § 4. PRODUCT CARD v2
 //
@@ -166,18 +140,18 @@ export interface ProductCardV2 {
   // ── Content ───────────────────────────────────────────────────────────────
   title: string
   brand: string
-  thumbnail: string              // primary display image
-  thumbnails: string[]           // hover / gallery images
+  thumbnail: string // primary display image
+  thumbnailAlt: string | null // second / hover image (thumbnails[1] from DB)
 
   // ── Taxonomy ──────────────────────────────────────────────────────────────
   dept: string
   subcat: string
 
   // ── Pricing ───────────────────────────────────────────────────────────────
-  price: number                  // current sale price
-  originalPrice: number | null   // struck-through price
-  discountPct: number            // 0–100
-  savingsAmount: number | null   // absolute $ saved — "Save $12.00"
+  price: number // current sale price
+  originalPrice: number | null // struck-through price
+  discountPct: number // 0–100
+  savingsAmount: number | null // absolute $ saved — "Save $12.00"
 
   /**
    * Unit price for comparison shopping.
@@ -194,9 +168,9 @@ export interface ProductCardV2 {
   coupon: string | null
 
   // ── Ratings ───────────────────────────────────────────────────────────────
-  avgRating: number              // 0.0–5.0
+  avgRating: number // 0.0–5.0
   reviewCount: number
-  ratingDistribution: RatingDistribution | null  // null in list view, present in detail
+  ratingDistribution: RatingDistribution | null // null in list view, present in detail
 
   // ── Commerce signals ──────────────────────────────────────────────────────
   isPrime: boolean
@@ -243,7 +217,7 @@ export interface ProductCardV2 {
 
   // ── Sponsored ─────────────────────────────────────────────────────────────
   sponsored: boolean
-  sponsoredLabel: string | null  // "Sponsored" | "Ad" — localisation-ready
+  sponsoredLabel: string | null // "Sponsored" | "Ad" — localisation-ready
 
   // ── Analytics ─────────────────────────────────────────────────────────────
   /**
@@ -260,7 +234,7 @@ export interface ProductCardV2 {
 }
 
 export interface RatingDistribution {
-  five: number    // percentage
+  five: number // percentage
   four: number
   three: number
   two: number
@@ -289,30 +263,30 @@ export interface DeliveryPromise {
 }
 
 export type BadgeType =
-  | 'amazons_choice'         // Amazon's Choice — orange border + logo
-  | 'best_seller'            // #1 Best Seller — orange banner
-  | 'new_release'            // New Release — green
-  | 'climate_pledge'         // Climate Pledge Friendly — green leaf
-  | 'prime'                  // Prime eligible — Prime logo
-  | 'deal'                   // Generic deal — red
-  | 'lightning_deal'         // Lightning Deal — yellow/orange
-  | 'limited_time_deal'      // Limited time deal — red
-  | 'free_shipping'          // Free shipping — blue
-  | 'trending'               // Trending — pink/purple
-  | 'top_rated'              // Top Rated — gold star
-  | 'prime_exclusive'        // Prime exclusive — navy
-  | 'small_business'         // Small Business — teal
+  | 'amazons_choice' // Amazon's Choice — orange border + logo
+  | 'best_seller' // #1 Best Seller — orange banner
+  | 'new_release' // New Release — green
+  | 'climate_pledge' // Climate Pledge Friendly — green leaf
+  | 'prime' // Prime eligible — Prime logo
+  | 'deal' // Generic deal — red
+  | 'lightning_deal' // Lightning Deal — yellow/orange
+  | 'limited_time_deal' // Limited time deal — red
+  | 'free_shipping' // Free shipping — blue
+  | 'trending' // Trending — pink/purple
+  | 'top_rated' // Top Rated — gold star
+  | 'prime_exclusive' // Prime exclusive — navy
+  | 'small_business' // Small Business — teal
 
 export interface ProductBadge {
   type: BadgeType
-  label: string              // Display text — "Amazon's Choice", "Best Seller", etc.
+  label: string // Display text — "Amazon's Choice", "Best Seller", etc.
   /** Sub-label for Amazon's Choice — "in Wireless Headphones" */
   subLabel: string | null
 }
 
 export interface CategoryRank {
-  rank: number               // 1, 2, 3 ...
-  categoryName: string       // "Over-Ear Headphones"
+  rank: number // 1, 2, 3 ...
+  categoryName: string // "Over-Ear Headphones"
   categoryLink: string
 }
 
@@ -545,7 +519,7 @@ export interface HeroBannerSlide {
   // Content
   title: string | null
   subtitle: string | null
-  eyebrow: string | null        // small text above title — "Limited Time"
+  eyebrow: string | null // small text above title — "Limited Time"
 
   // Imagery
   desktopImage: string | null
@@ -560,7 +534,7 @@ export interface HeroBannerSlide {
   // Theme
   textAlignment: 'left' | 'center' | 'right'
   textColor: 'light' | 'dark'
-  overlayOpacity: number        // 0–1
+  overlayOpacity: number // 0–1
 
   // Campaign tag
   badge: string | null
@@ -626,9 +600,9 @@ export interface MosaicPanel {
 }
 
 export interface PriceFilter {
-  max: number                    // 50
-  label: string                  // "under $50"
-  currency: string               // "USD"
+  max: number // 50
+  label: string // "under $50"
+  currency: string // "USD"
 }
 
 export interface MosaicCell {
@@ -656,11 +630,11 @@ export interface MosaicCell {
 
 export interface MosaicPanelTheme {
   /** Background color of the panel card */
-  backgroundColor: string       // default "#fff"
+  backgroundColor: string // default "#fff"
   /** Heading text color */
-  headingColor: string          // default "#0f1111"
+  headingColor: string // default "#0f1111"
   /** Accent color for "See more" link */
-  accentColor: string           // default "#007185"
+  accentColor: string // default "#007185"
   /** Whether panel has a visible border */
   hasBorder: boolean
 }
@@ -765,7 +739,7 @@ export interface DealCard {
   title: string
   brand: string
   thumbnail: string
-  thumbnails: string[]
+  thumbnailAlt: string | null
   dept: string
   subcat: string
   avgRating: number
@@ -801,8 +775,8 @@ export interface EditorialCampaignSection extends SectionBase {
 
 export interface EditorialCampaignData {
   campaignId: string
-  campaignName: string           // "Mother's Day"
-  headline: string               // "Explore Mother's Day deals"
+  campaignName: string // "Mother's Day"
+  headline: string // "Explore Mother's Day deals"
   subheadline: string | null
   backgroundImage: string | null // Full-width BG image URL
   backgroundGradient: string | null // CSS gradient fallback
@@ -822,7 +796,7 @@ export interface EditorialTile {
   label: string
   image: string | null
   link: string
-  badge: string | null           // "Up to 40% off"
+  badge: string | null // "Up to 40% off"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -838,7 +812,7 @@ export interface BestsellerListSection extends SectionBase {
 }
 
 export interface BestsellerListData {
-  categoryName: string           // "Clothing, Shoes & Jewelry"
+  categoryName: string // "Clothing, Shoes & Jewelry"
   categorySlug: string
   categoryLink: string
 
@@ -932,7 +906,7 @@ export interface SubNavLink {
   label: string
   link: string
   icon: string | null
-  badge: string | null           // "Hot", "New"
+  badge: string | null // "Hot", "New"
   active: boolean
 }
 
@@ -977,16 +951,16 @@ export interface PersonalizedSlot {
 
 export interface StorefrontMeta {
   schema: 'pikly_storefront_v2'
-  apiVersion: string            // semver — "2.0.0"
-  generatedAt: string           // ISO8601
+  apiVersion: string // semver — "2.0.0"
+  generatedAt: string // ISO8601
 
   /** Cache tier that served this response */
   cacheHit: boolean
   cacheTier: 'L1' | 'L2' | 'none'
-  cacheTtlRemaining: number | null   // seconds until cache expires
+  cacheTtlRemaining: number | null // seconds until cache expires
 
   sectionCount: number
-  productCount: number          // total product cards in response
+  productCount: number // total product cards in response
 
   /** Per-section build time for profiling (ms). Only in non-prod. */
   timing: SectionTiming[] | null
