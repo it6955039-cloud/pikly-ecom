@@ -1,28 +1,26 @@
-// src/catalog-intelligence/cil.module.ts
-// =============================================================================
-// Catalog Intelligence Layer — NestJS Module
+// src/catalog-intelligence/cil.module.ts  ← REPLACE
 //
-// Add to AppModule:
-//   import { CatalogIntelligenceModule } from './catalog-intelligence/cil.module'
-//   @Module({ imports: [..., CatalogIntelligenceModule] })
-//
-// Required env vars:
-//   NEON_DATABASE_URL  — Neon pooler DSN (port 6543, sslmode=require)
-//   GEMINI_API_KEY     — from aistudio.google.com/app/apikey (free tier ok)
-// =============================================================================
+// CHANGES vs original:
+//   1. Added IdentityModule — provides RequireRoleGuard + JitProvisioningGuard
+//      for CilAdminController.
+//   All other providers/exports unchanged.
 
-import { Module } from '@nestjs/common'
-import { ConfigModule } from '@nestjs/config'
+import { Module }         from '@nestjs/common'
+import { ConfigModule }   from '@nestjs/config'
+import { IdentityModule } from '../identity/identity.module'
 
-import { NeonService }                from './services/neon.service'
+import { NeonService }                 from './services/neon.service'
 import { AttributeIntelligenceService } from './services/attribute-intelligence.service'
-import { AttributeFamilyService }     from './services/attribute-family.service'
-import { DataQualityService }         from './services/data-quality.service'
-import { EnrichmentPipelineService }  from './services/enrichment-pipeline.service'
-import { CilAdminController }         from './controllers/cil-admin.controller'
+import { AttributeFamilyService }      from './services/attribute-family.service'
+import { DataQualityService }          from './services/data-quality.service'
+import { EnrichmentPipelineService }   from './services/enrichment-pipeline.service'
+import { CilAdminController }          from './controllers/cil-admin.controller'
 
 @Module({
-  imports: [ConfigModule],
+  imports: [
+    ConfigModule,
+    IdentityModule,   // ← provides RequireRoleGuard, JitProvisioningGuard, @RequireRole
+  ],
   providers: [
     NeonService,
     AttributeIntelligenceService,
@@ -32,7 +30,6 @@ import { CilAdminController }         from './controllers/cil-admin.controller'
   ],
   controllers: [CilAdminController],
   exports: [
-    // Export so ProductsModule, AlgoliaModule can use accordion/quality data
     NeonService,
     AttributeIntelligenceService,
     AttributeFamilyService,

@@ -1,9 +1,11 @@
 // src/health/health.controller.ts — PostgreSQL only, no Mongoose
 import { Controller, Get, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
-import { AuthGuard } from '@nestjs/passport'
-import { RolesGuard }  from '../common/guards/roles.guard'
-import { Roles }       from '../common/decorators/roles.decorator'
+import { RequireRoleGuard }     from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { RequireRole }          from '../identity/guards/identity.guards'
+
+
 import { successResponse }   from '../common/api-utils'
 import { ProductsService }   from '../products/products.service'
 import { CategoriesService } from '../categories/categories.service'
@@ -31,8 +33,8 @@ export class HealthController {
   /** Admin-only readiness probe — heap, counts, env */
   @Get('detail')
   @ApiBearerAuth()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @UseGuards(RequireRoleGuard, JitProvisioningGuard)
+  @RequireRole('admin')
   @ApiOperation({ summary: '[Admin] Detailed health: heap, counts, uptime' })
   async detail() {
     const now = Date.now()

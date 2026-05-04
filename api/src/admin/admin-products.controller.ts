@@ -13,9 +13,11 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger'
-import { AuthGuard } from '@nestjs/passport'
-import { RolesGuard } from '../common/guards/roles.guard'
-import { Roles } from '../common/decorators/roles.decorator'
+import { RequireRoleGuard }     from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { RequireRole }          from '../identity/guards/identity.guards'
+
+
 import { ProductsService } from '../products/products.service'
 import { AdminCreateProductDto } from '../products/dto/admin-create-product.dto'
 import { AdminUpdateProductDto } from '../products/dto/admin-update-product.dto'
@@ -23,8 +25,8 @@ import { successResponse } from '../common/api-utils'
 
 @ApiTags('Admin — Products')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'), RolesGuard)
-@Roles('admin')
+@UseGuards(RequireRoleGuard, JitProvisioningGuard)
+@RequireRole('admin')
 @Controller('admin/products')
 export class AdminProductsController {
   constructor(private readonly productsService: ProductsService) {}

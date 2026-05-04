@@ -27,12 +27,14 @@ import {
   Logger,
 } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes, ApiBody } from '@nestjs/swagger'
-import { AuthGuard } from '@nestjs/passport'
+import { RequireRoleGuard }     from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { RequireRole }          from '../identity/guards/identity.guards'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { memoryStorage } from 'multer'
 import { v2 as cloudinary } from 'cloudinary'
-import { RolesGuard }      from '../common/guards/roles.guard'
-import { Roles }           from '../common/decorators/roles.decorator'
+
+
 import { successResponse } from '../common/api-utils'
 
 const MAX_SIZE_MB = 5
@@ -80,8 +82,8 @@ function uploadToCloudinary(
 
 @ApiTags('Admin — Uploads')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'), RolesGuard)
-@Roles('admin')
+@UseGuards(RequireRoleGuard, JitProvisioningGuard)
+@RequireRole('admin')
 @Controller('admin/upload')
 export class UploadsController {
   private readonly logger = new Logger(UploadsController.name)

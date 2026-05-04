@@ -17,9 +17,11 @@ import {
   MaxLength, MinLength, IsIn, IsUrl, Min,
 } from 'class-validator'
 import { Type } from 'class-transformer'
-import { AuthGuard } from '@nestjs/passport'
-import { RolesGuard } from '../common/guards/roles.guard'
-import { Roles } from '../common/decorators/roles.decorator'
+import { RequireRoleGuard }     from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { RequireRole }          from '../identity/guards/identity.guards'
+
+
 import { HomepageService } from '../homepage/homepage.service'
 import { successResponse } from '../common/api-utils'
 
@@ -111,8 +113,8 @@ class UpdateBannerDto {
 
 @ApiTags('Admin — Banners')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'), RolesGuard)
-@Roles('admin')
+@UseGuards(RequireRoleGuard, JitProvisioningGuard)
+@RequireRole('admin')
 @Controller('admin/banners')
 export class AdminBannersController {
   constructor(private readonly homepageService: HomepageService) {}

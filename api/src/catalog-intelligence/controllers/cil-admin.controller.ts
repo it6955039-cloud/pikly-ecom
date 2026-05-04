@@ -7,9 +7,11 @@ import {
   BadRequestException, ParseIntPipe, DefaultValuePipe, ParseBoolPipe,
 } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery, ApiParam, ApiBody } from '@nestjs/swagger'
-import { AuthGuard }  from '@nestjs/passport'
-import { RolesGuard } from '../../common/guards/roles.guard'
-import { Roles }      from '../../common/decorators/roles.decorator'
+import { RequireRoleGuard }     from '../../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../../identity/jit/jit-provisioning.guard'
+import { RequireRole }          from '../../identity/guards/identity.guards'
+
+
 import { NeonService }              from '../services/neon.service'
 import { AttributeIntelligenceService } from '../services/attribute-intelligence.service'
 import { AttributeFamilyService }   from '../services/attribute-family.service'
@@ -25,8 +27,8 @@ interface StartJobBody { batchSize?: number; resumeFromAsin?: string | null }
 
 @ApiTags('CIL — Catalog Intelligence Layer')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'), RolesGuard)
-@Roles('admin')
+@UseGuards(RequireRoleGuard, JitProvisioningGuard)
+@RequireRole('admin')
 @Controller('admin/cil')
 export class CilAdminController {
   constructor(

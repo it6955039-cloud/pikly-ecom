@@ -2,7 +2,7 @@
 //
 // Admin CRUD + reorder API for homepage widget slots.
 //
-// All routes require: valid JWT (AuthGuard) + role = 'admin' (RolesGuard).
+// All routes require: RequireRoleGuard + JitProvisioningGuard + @RequireRole('admin').
 // Follows the exact same guard + decorator pattern as admin-banners.controller.ts.
 //
 // Routes:
@@ -28,9 +28,11 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam } from '@nestjs/swagger'
-import { AuthGuard } from '@nestjs/passport'
-import { RolesGuard } from '../common/guards/roles.guard'
-import { Roles } from '../common/decorators/roles.decorator'
+import { RequireRoleGuard }     from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { RequireRole }          from '../identity/guards/identity.guards'
+
+
 import { HomepageWidgetsService } from '../homepage/homepage-widgets.service'
 import {
   CreateWidgetDto,
@@ -41,8 +43,8 @@ import { successResponse } from '../common/api-utils'
 
 @ApiTags('Admin — Homepage Widgets')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'), RolesGuard)
-@Roles('admin')
+@UseGuards(RequireRoleGuard, JitProvisioningGuard)
+@RequireRole('admin')
 @Controller('admin/homepage-widgets')
 export class AdminHomepageWidgetsController {
   constructor(private readonly widgetsService: HomepageWidgetsService) {}

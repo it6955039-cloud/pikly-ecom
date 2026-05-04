@@ -3,9 +3,11 @@ import { Controller, Post, Body, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
 import { IsArray, IsString, IsIn, ArrayMinSize, ArrayMaxSize } from 'class-validator'
 import { ApiProperty } from '@nestjs/swagger'
-import { AuthGuard }       from '@nestjs/passport'
-import { RolesGuard }      from '../common/guards/roles.guard'
-import { Roles }           from '../common/decorators/roles.decorator'
+import { RequireRoleGuard }     from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { RequireRole }          from '../identity/guards/identity.guards'
+
+
 import { ProductsService } from '../products/products.service'
 import { DatabaseService } from '../database/database.service'
 import { MailService }     from '../mail/mail.service'
@@ -53,8 +55,8 @@ class BulkOrderActionDto {
 
 @ApiTags('Admin — Bulk Operations')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'), RolesGuard)
-@Roles('admin')
+@UseGuards(RequireRoleGuard, JitProvisioningGuard)
+@RequireRole('admin')
 @Controller('admin/bulk')
 export class AdminBulkController {
   constructor(

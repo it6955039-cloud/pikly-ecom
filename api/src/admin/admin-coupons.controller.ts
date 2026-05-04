@@ -8,9 +8,11 @@ import { IsString, IsIn, IsNumber, IsBoolean, IsOptional, IsDateString,
          IsArray, Min, Max, IsInt } from 'class-validator'
 import { ApiProperty } from '@nestjs/swagger'
 import { Type } from 'class-transformer'
-import { AuthGuard }       from '@nestjs/passport'
-import { RolesGuard }      from '../common/guards/roles.guard'
-import { Roles }           from '../common/decorators/roles.decorator'
+import { RequireRoleGuard }     from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { RequireRole }          from '../identity/guards/identity.guards'
+
+
 import { DatabaseService } from '../database/database.service'
 import { successResponse } from '../common/api-utils'
 
@@ -59,8 +61,8 @@ class UpdateCouponDto {
 
 @ApiTags('Admin — Coupons')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'), RolesGuard)
-@Roles('admin')
+@UseGuards(RequireRoleGuard, JitProvisioningGuard)
+@RequireRole('admin')
 @Controller('admin/coupons')
 export class AdminCouponsController {
   constructor(private readonly db: DatabaseService) {}

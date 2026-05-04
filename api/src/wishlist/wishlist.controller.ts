@@ -1,38 +1,52 @@
-import { Controller, Get, Post, Body, Query, UseGuards, Request } from '@nestjs/common'
-import { ApiTags, ApiOperation, ApiQuery, ApiBearerAuth } from '@nestjs/swagger'
-import { AuthGuard } from '@nestjs/passport'
-import { WishlistService } from './wishlist.service'
-import { successResponse } from '../common/api-utils'
+/**
+ * @file wishlist.controller.ts  ← REPLACE src/wishlist/wishlist.controller.ts
+ *
+ * Wishlist Controller — migrated from AuthGuard('jwt') → IAL guards.
+ *
+ * DIFF vs original:
+ *   - @UseGuards(AuthGuard('jwt'))  → @UseGuards(RequireAuthGuard, JitProvisioningGuard)
+ *   - @Request() req: any           → @CurrentUserId() userId: string
+ *   - req.user.userId               → userId
+ */
 
-// All wishlist routes require authentication. userId is derived from the JWT
-// token, not from a client-supplied query parameter, to prevent one user from
-// reading or modifying another user's wishlist.
+import { Controller, Get, Post, Delete, Body, Query, UseGuards } from '@nestjs/common'
+import { ApiTags, ApiOperation, ApiQuery, ApiBearerAuth }        from '@nestjs/swagger'
+
+import { WishlistService }        from './wishlist.service'
+import { successResponse }        from '../common/api-utils'
+import { RequireAuthGuard }       from '../identity/guards/identity.guards'
+import { JitProvisioningGuard }   from '../identity/jit/jit-provisioning.guard'
+import { CurrentUserId }          from '../identity/decorators/identity.decorators'
+
 @ApiTags('Wishlist')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(RequireAuthGuard, JitProvisioningGuard)
 @Controller('wishlist')
 export class WishlistController {
   constructor(private readonly wishlistService: WishlistService) {}
 
   @Get()
   @ApiOperation({ summary: "Get the authenticated user's wishlist" })
-  async getWishlist(@Request() req: any) {
-    const data = await this.wishlistService.getWishlist(req.user.userId)
-    return successResponse(data)
+  async getWishlist(@CurrentUserId() userId: string) {
+    return successResponse(await this.wishlistService.getWishlist(userId))
   }
 
   @Post('toggle')
   @ApiOperation({ summary: 'Add or remove a product from the wishlist' })
-  async toggle(@Request() req: any, @Body() body: { productId: string }) {
-    const data = await this.wishlistService.toggle(req.user.userId, body.productId)
-    return successResponse(data)
+  async toggle(
+    @CurrentUserId() userId: string,
+    @Body() body: { productId: string },
+  ) {
+    return successResponse(await this.wishlistService.toggle(userId, body.productId))
   }
 
   @Get('check')
   @ApiOperation({ summary: 'Check whether a product is in the wishlist' })
   @ApiQuery({ name: 'productId', required: true })
-  async check(@Request() req: any, @Query('productId') productId: string) {
-    const data = await this.wishlistService.check(req.user.userId, productId)
-    return successResponse(data)
+  async check(
+    @CurrentUserId() userId: string,
+    @Query('productId') productId: string,
+  ) {
+    return successResponse(await this.wishlistService.check(userId, productId))
   }
 }
