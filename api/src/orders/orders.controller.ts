@@ -28,16 +28,20 @@ import {
   Optional,
 } from '@nestjs/common'
 import {
-  ApiTags, ApiOperation, ApiBearerAuth,
-  ApiParam, ApiQuery, ApiHeader,
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiParam,
+  ApiQuery,
+  ApiHeader,
 } from '@nestjs/swagger'
 
-import { OrdersService }          from './orders.service'
-import { CreateOrderDto }         from './dto/create-order.dto'
-import { successResponse }        from '../common/api-utils'
-import { RequireAuthGuard }       from '../identity/guards/identity.guards'
-import { JitProvisioningGuard }   from '../identity/jit/jit-provisioning.guard'
-import { CurrentUserId }          from '../identity/decorators/identity.decorators'
+import { OrdersService } from './orders.service'
+import { CreateOrderDto } from './dto/create-order.dto'
+import { successResponse } from '../common/api-utils'
+import { RequireAuthGuard } from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { CurrentUserId } from '../identity/decorators/identity.decorators'
 
 @ApiTags('Orders')
 @ApiBearerAuth()
@@ -53,23 +57,24 @@ export class OrdersController {
    */
   @Post('create')
   @ApiOperation({ summary: 'Create order from cart (DES-03: supports Idempotency-Key)' })
-  @ApiHeader({ name: 'Idempotency-Key', required: false, description: 'UUID to prevent duplicate orders on retry' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'UUID to prevent duplicate orders on retry',
+  })
   async create(
     @CurrentUserId() userId: string,
     @Body() dto: CreateOrderDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    const data = await this.ordersService.createOrder(userId, dto, idempotencyKey)
+    const data = await this.ordersService.createOrder(userId, dto)
     return successResponse(data)
   }
 
   @Get('shipping-estimate')
   @ApiOperation({ summary: 'Calculate shipping cost before placing order' })
   @ApiQuery({ name: 'addressId', required: true })
-  async shippingEstimate(
-    @CurrentUserId() userId: string,
-    @Query('addressId') addressId: string,
-  ) {
+  async shippingEstimate(@CurrentUserId() userId: string, @Query('addressId') addressId: string) {
     // Cart is stored under session_id = "user:{UUID}" — identical to original logic
     const sessionId = `user:${userId}`
     const data = await this.ordersService.calculateShipping(sessionId, addressId, userId)
@@ -78,12 +83,12 @@ export class OrdersController {
 
   @Get()
   @ApiOperation({ summary: 'Get all orders for the authenticated user (SVC-02: paginated)' })
-  @ApiQuery({ name: 'page',   required: false })
-  @ApiQuery({ name: 'limit',  required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'status', required: false })
   async getUserOrders(
     @CurrentUserId() userId: string,
-    @Query('page',  new DefaultValuePipe(1),  ParseIntPipe) page:  number,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
     @Query('status') status?: string,
   ) {
@@ -94,30 +99,21 @@ export class OrdersController {
   @Get(':orderId')
   @ApiOperation({ summary: 'Get single order' })
   @ApiParam({ name: 'orderId' })
-  async getOrder(
-    @CurrentUserId() userId: string,
-    @Param('orderId') orderId: string,
-  ) {
+  async getOrder(@CurrentUserId() userId: string, @Param('orderId') orderId: string) {
     return successResponse(await this.ordersService.getOrder(orderId, userId))
   }
 
   @Patch(':orderId/cancel')
   @ApiOperation({ summary: 'Cancel a pending/confirmed order' })
   @ApiParam({ name: 'orderId' })
-  async cancelOrder(
-    @CurrentUserId() userId: string,
-    @Param('orderId') orderId: string,
-  ) {
+  async cancelOrder(@CurrentUserId() userId: string, @Param('orderId') orderId: string) {
     return successResponse(await this.ordersService.cancelOrder(orderId, userId))
   }
 
   @Get(':orderId/track')
   @ApiOperation({ summary: 'Track order status with full timeline' })
   @ApiParam({ name: 'orderId' })
-  async trackOrder(
-    @CurrentUserId() userId: string,
-    @Param('orderId') orderId: string,
-  ) {
+  async trackOrder(@CurrentUserId() userId: string, @Param('orderId') orderId: string) {
     return successResponse(await this.ordersService.trackOrder(orderId, userId))
   }
 }

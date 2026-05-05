@@ -8,22 +8,22 @@
 // Note: DatabaseModule, CacheModule, RedisModule are @Global() — no import needed here.
 
 import { Module } from '@nestjs/common'
-import { HomepageController }             from './homepage.controller'
-import { HomepageService }                from './homepage.service'
-import { HomepageStorefrontService }      from './homepage-storefront.service'
-import { HomepageStorefrontV2Service }    from './homepage-storefront-v2.service'
-import { HomepageWidgetsService }         from './homepage-widgets.service'
-import { PersonalizationService }         from './homepage-personalization.service'
-import { PersonalizationV2Service }       from './homepage-personalization-v2.service'
-import { ProductsModule }                 from '../products/products.module'
-import { CategoriesModule }               from '../categories/categories.module'
-import { IdentityModule }                 from '../identity/identity.module'
+import { HomepageController } from './homepage.controller'
+import { HomepageService } from './homepage.service'
+import { HomepageStorefrontService } from './homepage-storefront.service'
+import { HomepageStorefrontV2Service } from './homepage-storefront-v2.service'
+import { HomepageWidgetsService } from './homepage-widgets.service'
+import { PersonalizationService } from './homepage-personalization.service'
+import { PersonalizationV2Service } from './homepage-personalization-v2.service'
+import { ProductsModule } from '../products/products.module'
+import { CategoriesModule } from '../categories/categories.module'
+import { IdentityModule } from '../identity/identity.module'
 
 @Module({
   imports: [
     ProductsModule,
     CategoriesModule,
-    IdentityModule,   // ← provides OptionalIdentityGuard, RequireAuthGuard, JitProvisioningGuard
+    IdentityModule, // ← provides OptionalIdentityGuard, RequireAuthGuard, JitProvisioningGuard
   ],
   controllers: [HomepageController],
   providers: [
@@ -37,6 +37,7 @@ import { IdentityModule }                 from '../identity/identity.module'
     PersonalizationV2Service,
   ],
   exports: [
+    HomepageWidgetsService,
     HomepageStorefrontV2Service,
     PersonalizationV2Service,
     // v1 exports kept for backward compat (admin cache invalidation)

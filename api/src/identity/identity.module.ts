@@ -56,18 +56,19 @@ import { ClerkAuthMiddleware }     from './middleware/clerk-auth.middleware'
 import { ShadowSessionMiddleware } from './middleware/shadow-session.middleware'
 import { ClerkWebhookController }  from './clerk/clerk-webhook.controller'
 import {
-  JitProvisioningGuard,
   RequireAuthGuard,
   RequireRoleGuard,
   OptionalIdentityGuard,
   ShowcaseAuthGuard,
   ShowcaseRoleGuard,
 } from './guards/identity.guards'
+import { JitProvisioningGuard }  from './jit/jit-provisioning.guard'
 
 // Re-export everything consumers need — they import from this barrel, not
 // from individual files (prevents accidental deep imports that bypass DI)
 export * from './ports/identity.port'
 export * from './guards/identity.guards'
+export { JitProvisioningGuard, SkipJit } from './jit/jit-provisioning.guard'
 export * from './decorators/identity.decorators'
 export * from './middleware/shadow-session.middleware'
 
