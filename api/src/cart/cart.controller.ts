@@ -65,7 +65,7 @@ export class CartController {
     @OptionalUser() user: ResolvedIdentity | null,
     @Query('sessionId') sid?: string,
   ) {
-    const sessionId = user ? `user:${user.internalId}` : this.resolveSessionId(null, sid)
+    const sessionId = this.resolveSessionId(user, sid)
     return successResponse(await this.cartService.getCart(sessionId))
   }
 
