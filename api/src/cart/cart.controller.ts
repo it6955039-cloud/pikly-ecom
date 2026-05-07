@@ -1,26 +1,16 @@
-// src/cart/cart.controller.ts  ← REPLACE
+// src/cart/cart.controller.ts
 //
-// MIGRATION DIFF vs v2 original:
-//   Class level:
-//     OptionalJwtGuard → OptionalIdentityGuard
+// FIX: OptionalIdentityGuard → OptionalJitGuard
 //
-//   resolveSessionId():
-//     req.user?.userId  → user?.internalId
-//     The method signature changes from (req: any, clientSid?) to
-//     (user: ResolvedIdentity | null, clientSid?) so it receives the typed
-//     identity from the @OptionalUser() decorator instead of raw req.
+// OptionalIdentityGuard ek no-op tha — sirf "true" return karta tha aur
+// req.identity kabhi set nahi hoti thi. Isliye backend hamesha user ko
+// guest samajhta tha aur sessionId maangta tha, chahe token sahi bhi hota.
 //
-//   mergeCart endpoint:
-//     AuthGuard('jwt')  → RequireAuthGuard + JitProvisioningGuard
-//     req.user.userId   → @CurrentUserId() userId
+// OptionalJitGuard yeh kaam karta hai:
+//   - Token hai → user pehchano → req.identity set karo
+//   - Token nahi → guest treat karo (koi error nahi)
 //
-//   All other endpoints pass @OptionalUser() user instead of @Request() req.
-//
-//   CartService method signatures are UNCHANGED — they still receive sessionId
-//   and optional userId strings, both are now internal UUIDs.
-//
-// SEC-04 invariant preserved: authenticated user's session is always
-// derived from their verified internalId, client-provided sessionId is ignored.
+// Baaki sab UNCHANGED hai — CartService, DTOs, resolveSessionId logic sab same.
 
 import {
   Controller, Get, Post, Patch, Delete, Body, Query, Param,
@@ -28,19 +18,20 @@ import {
 } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiQuery, ApiParam, ApiBearerAuth } from '@nestjs/swagger'
 
-import { CartService }   from './cart.service'
+import { CartService }    from './cart.service'
 import { successResponse } from '../common/api-utils'
 import { AddToCartDto, UpdateCartDto, ApplyCouponDto, MergeCartDto } from './dto/cart.dto'
 
-import { OptionalIdentityGuard, RequireAuthGuard } from '../identity/guards/identity.guards'
-import { JitProvisioningGuard }  from '../identity/jit/jit-provisioning.guard'
+import { RequireAuthGuard } from '../identity/guards/identity.guards'
+import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
+import { OptionalJitGuard } from '../identity/guards/optional-jit.guard' // ← naya guard
 import { OptionalUser, CurrentUserId } from '../identity/decorators/identity.decorators'
-import { ResolvedIdentity }      from '../identity/ports/identity.port'
+import { ResolvedIdentity } from '../identity/ports/identity.port'
 
 const SESSION_ID_REGEX = /^[a-zA-Z0-9_\-:]{8,128}$/
 
 @ApiTags('Cart')
-@UseGuards(OptionalIdentityGuard)
+@UseGuards(OptionalJitGuard)   // ← SIRF YAHI BADLA HAI
 @ApiBearerAuth()
 @Controller('cart')
 export class CartController {
@@ -74,8 +65,6 @@ export class CartController {
     @OptionalUser() user: ResolvedIdentity | null,
     @Query('sessionId') sid?: string,
   ) {
-    // Note: X-Session-ID header not available as decorator — guests pass via query or header
-    // The guest path still works via query param (backward compat with frontend)
     const sessionId = user ? `user:${user.internalId}` : this.resolveSessionId(null, sid)
     return successResponse(await this.cartService.getCart(sessionId))
   }
