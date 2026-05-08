@@ -88,6 +88,12 @@ func invalidationPattern(path string) string {
 		return "px:GET:/api/homepage*"
 	case strings.HasPrefix(path, "/api/categories"):
 		return "px:GET:/api/categories*"
+	// Cart and orders bypass cache entirely via noCachePath,
+	// but keep invalidation rules here as safety net.
+	case strings.HasPrefix(path, "/api/cart"):
+		return "px:GET:/api/cart*"
+	case strings.HasPrefix(path, "/api/orders"):
+		return "px:GET:/api/orders*"
 	default:
 		return ""
 	}
@@ -140,7 +146,11 @@ func noCachePath(path string) bool {
 		path == "/api/docs-json" ||
 		path == "/api/docs-yaml" ||
 		path == "/health" ||
-		strings.HasPrefix(path, "/health")
+		strings.HasPrefix(path, "/health") ||
+		// Cart and orders are user-specific — NEVER cache at proxy level.
+		// Caching here would serve User A cart data to User B (critical security bug).
+		strings.HasPrefix(path, "/api/cart") ||
+		strings.HasPrefix(path, "/api/orders")
 }
 
 func (h *Handler) serveWithCache(c *gin.Context, path, query string) {
