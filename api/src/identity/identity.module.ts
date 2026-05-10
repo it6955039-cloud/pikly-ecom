@@ -47,14 +47,14 @@ import {
 import { ConfigModule, ConfigService } from '@nestjs/config'
 
 import { IIdentityService, SHOWCASE_IDENTITY_SERVICE } from './ports/identity.port'
-import { ClerkProductionAdapter }  from './adapters/clerk-production.adapter'
-import { LegacyShowcaseAdapter }   from './adapters/legacy-showcase.adapter'
-import { IdentityMappingService }  from './gim/identity-mapping.service'
-import { OutboxService }           from './outbox/outbox.service'
-import { OutboxProcessorService }  from './outbox/outbox.processor'
-import { ClerkAuthMiddleware }     from './middleware/clerk-auth.middleware'
+import { ClerkProductionAdapter } from './adapters/clerk-production.adapter'
+import { LegacyShowcaseAdapter } from './adapters/legacy-showcase.adapter'
+import { IdentityMappingService } from './gim/identity-mapping.service'
+import { OutboxService } from './outbox/outbox.service'
+import { OutboxProcessorService } from './outbox/outbox.processor'
+import { ClerkAuthMiddleware } from './middleware/clerk-auth.middleware'
 import { ShadowSessionMiddleware } from './middleware/shadow-session.middleware'
-import { ClerkWebhookController }  from './clerk/clerk-webhook.controller'
+import { ClerkWebhookController } from './clerk/clerk-webhook.controller'
 import {
   RequireAuthGuard,
   RequireRoleGuard,
@@ -62,7 +62,7 @@ import {
   ShowcaseAuthGuard,
   ShowcaseRoleGuard,
 } from './guards/identity.guards'
-import { JitProvisioningGuard }  from './jit/jit-provisioning.guard'
+import { JitProvisioningGuard } from './jit/jit-provisioning.guard'
 
 // Re-export everything consumers need — they import from this barrel, not
 // from individual files (prevents accidental deep imports that bypass DI)
@@ -73,11 +73,11 @@ export * from './decorators/identity.decorators'
 export * from './middleware/shadow-session.middleware'
 
 @Module({
-  imports:  [ConfigModule],
+  imports: [ConfigModule],
   providers: [
     // ── Primary (Production) Adapter ───────────────────────────────────────
     {
-      provide:    IIdentityService,
+      provide: IIdentityService,
       useFactory: (config: ConfigService, gim: IdentityMappingService, outbox: OutboxService) => {
         const provider = config.get<string>('IDENTITY_PROVIDER', 'clerk')
 
@@ -86,8 +86,8 @@ export * from './middleware/shadow-session.middleware'
           const logger = new Logger('IdentityModule')
           logger.warn(
             '⚠️  ROLLBACK MODE: IDENTITY_PROVIDER=legacy. ' +
-            'Production traffic is routing through LegacyShowcaseAdapter. ' +
-            'This should only be used for emergency rollback.',
+              'Production traffic is routing through LegacyShowcaseAdapter. ' +
+              'This should only be used for emergency rollback.',
           )
           // In rollback mode, the legacy adapter serves production
           // We inject null for RedisService here — the DI framework provides it
@@ -102,8 +102,8 @@ export * from './middleware/shadow-session.middleware'
 
     // ── Showcase (Dormant Secondary) Adapter ───────────────────────────────
     {
-      provide:    SHOWCASE_IDENTITY_SERVICE,
-      useClass:   LegacyShowcaseAdapter,
+      provide: SHOWCASE_IDENTITY_SERVICE,
+      useClass: LegacyShowcaseAdapter,
     },
 
     // ── GIM — REQUEST scoped for per-request L1 cache ──────────────────────
@@ -148,14 +148,14 @@ export class IdentityModule implements NestModule, OnModuleInit {
     if (!this.identityService.isProductionAdapter) {
       this.logger.warn(
         '[IdentityModule] Production adapter is flagged as non-production. ' +
-        'This is expected only during emergency rollback (IDENTITY_PROVIDER=legacy).',
+          'This is expected only during emergency rollback (IDENTITY_PROVIDER=legacy).',
       )
     }
 
     this.logger.log(
       `[IdentityModule] Initialised. ` +
-      `Production adapter: ${this.identityService.constructor.name}. ` +
-      `Showcase adapter: LegacyShowcaseAdapter (isolated to /showcase/*).`,
+        `Production adapter: ${this.identityService.constructor.name}. ` +
+        `Showcase adapter: LegacyShowcaseAdapter (isolated to /showcase/*).`,
     )
   }
 
@@ -185,8 +185,10 @@ export class IdentityModule implements NestModule, OnModuleInit {
         { path: 'showcase/(.*)', method: RequestMethod.ALL },
         // Public routes that need no auth resolution (Clerk middleware is
         // safe to run on them but excluded for performance)
-        { path: 'health',         method: RequestMethod.GET },
-        { path: 'health/(.*)',    method: RequestMethod.GET },
+        { path: 'health', method: RequestMethod.GET },
+        { path: 'health/(.*)', method: RequestMethod.GET },
+        // Stripe webhook must NOT have Clerk auth — uses Stripe signature instead
+        { path: 'payments/stripe/webhook', method: RequestMethod.POST },
       )
       .forRoutes('*')
   }

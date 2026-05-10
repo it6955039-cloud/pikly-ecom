@@ -54,6 +54,7 @@ import { HealthModule }            from './health/health.module'
 import { CategoryShowcaseModule }  from './category-showcase/category-showcase.module'
 import { AdminModule }             from './admin/admin.module'
 import { WebhookModule }           from './webhooks/webhook.module'
+import { PaymentsModule }          from './payments/payments.module'
 import { UploadsModule }           from './uploads/uploads.module'
 
 @Module({
@@ -91,6 +92,7 @@ import { UploadsModule }           from './uploads/uploads.module'
     CategoryShowcaseModule,
     AdminModule,
     WebhookModule,
+    PaymentsModule,
     UploadsModule,
   ],
   providers: [

@@ -1,36 +1,36 @@
-import { IsString, IsOptional, IsInt, Min, Max } from 'class-validator'
+import { IsString, IsOptional, IsInt, Min, Max, IsArray, ValidateNested, ArrayMinSize, ArrayMaxSize } from 'class-validator'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 import { Type } from 'class-transformer'
 
 export class AddToCartDto {
-  @ApiProperty()
+  @ApiProperty({ description: 'Product ASIN or slug', example: 'B09XYZ123' })
   @IsString()
   productId: string
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Variant ID (size/color) — omit if product has no variants' })
   @IsOptional()
   @IsString()
   variantId?: string
 
-  @ApiProperty({ minimum: 1, maximum: 99 })
+  @ApiProperty({ minimum: 1, maximum: 99, example: 1 })
   @IsInt()
   @Min(1)
   @Max(99)
   @Type(() => Number)
   quantity: number
 
-  // SEC-04: optional — authenticated users have this derived from their JWT
-  // in the controller so whatever they send here is ignored. Guest users must
-  // supply it via the X-Session-ID header; sending it in the body also works
-  // for backward compatibility.
-  @ApiPropertyOptional({ description: 'Guest session ID — ignored when authenticated' })
+  @ApiPropertyOptional({
+    description: '⚠️ Guest only — ignored when Authorization header is present. ' +
+      'Logged-in users never need to send this; session is derived from JWT.',
+    example: 'a1b2c3d4-e5f6-...',
+  })
   @IsOptional()
   @IsString()
   sessionId?: string
 }
 
 export class UpdateCartDto {
-  @ApiProperty()
+  @ApiProperty({ example: 'B09XYZ123' })
   @IsString()
   productId: string
 
@@ -39,21 +39,26 @@ export class UpdateCartDto {
   @IsString()
   variantId?: string
 
-  @ApiProperty({ minimum: 0, maximum: 99, description: '0 removes the item' })
+  @ApiProperty({
+    minimum: 0,
+    maximum: 99,
+    description: 'New quantity. Send 0 to remove the item entirely.',
+    example: 3,
+  })
   @IsInt()
   @Min(0)
   @Max(99)
   @Type(() => Number)
   quantity: number
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: '⚠️ Guest only — ignored when Authorization header is present.' })
   @IsOptional()
   @IsString()
   sessionId?: string
 }
 
 export class RemoveFromCartDto {
-  @ApiProperty()
+  @ApiProperty({ example: 'B09XYZ123' })
   @IsString()
   productId: string
 
@@ -62,25 +67,62 @@ export class RemoveFromCartDto {
   @IsString()
   variantId?: string
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: '⚠️ Guest only — ignored when Authorization header is present.' })
   @IsOptional()
   @IsString()
   sessionId?: string
 }
 
+// ── NEW: Bulk remove ────────────────────────────────────────────────────────
+
+export class BulkRemoveItemDto {
+  @ApiProperty({ description: 'Product ASIN or slug', example: 'B09XYZ123' })
+  @IsString()
+  productId: string
+
+  @ApiPropertyOptional({ description: 'Variant ID — only needed if product has variants' })
+  @IsOptional()
+  @IsString()
+  variantId?: string
+}
+
+export class BulkRemoveDto {
+  @ApiProperty({
+    type: [BulkRemoveItemDto],
+    description: 'List of items to remove (1–50). Each item identified by productId + optional variantId.',
+    example: [
+      { productId: 'B09XYZ123' },
+      { productId: 'B08ABC456', variantId: 'B08ABC456-RED-L' },
+    ],
+  })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => BulkRemoveItemDto)
+  items: BulkRemoveItemDto[]
+
+  @ApiPropertyOptional({ description: '⚠️ Guest only — ignored when Authorization header is present.' })
+  @IsOptional()
+  @IsString()
+  sessionId?: string
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+
 export class ApplyCouponDto {
-  @ApiProperty()
+  @ApiProperty({ example: 'SAVE10' })
   @IsString()
   code: string
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: '⚠️ Guest only — ignored when Authorization header is present.' })
   @IsOptional()
   @IsString()
   sessionId?: string
 }
 
 export class MergeCartDto {
-  @ApiProperty({ description: 'The guest sessionId to merge from' })
+  @ApiProperty({ description: 'The guest sessionId stored in localStorage before login' })
   @IsString()
   guestSessionId: string
 

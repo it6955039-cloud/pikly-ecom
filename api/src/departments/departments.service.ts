@@ -1,16 +1,4 @@
 // src/departments/departments.service.ts
-//
-// Provides department-level catalog data derived directly from the
-// ProductsService in-memory cache — zero extra DB queries on the hot path.
-//
-// Architecture note:
-//   We deliberately compute departments from store.products at request time
-//   rather than from store.categories because:
-//   1. taxonomy_dept on products is the ground truth (seeded from _taxonomy)
-//   2. store.categories might not be seeded, or might be stale
-//   3. This gives accurate product counts with no sync delay
-//
-// All operations are O(n) over ~4,141 products in RAM — negligible latency.
 
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { ProductsService } from '../products/products.service'
@@ -23,7 +11,7 @@ export interface DepartmentCard {
   topBrands:    string[]
   priceRange:   { min: number; max: number }
   avgRating:    number
-  thumbnail:    string | null   // first product thumbnail as dept hero image
+  thumbnail:    string | null
   flags: {
     bestSellerCount: number
     onSaleCount:     number
@@ -38,6 +26,19 @@ export interface SubcatCard {
   productCount: number
   priceRange:   { min: number; max: number }
   avgRating:    number
+}
+
+export interface DeptSearchFacets {
+  subcategories: { name: string; slug: string; count: number }[]
+  brands:        { name: string; count: number }[]
+  priceRanges:   { label: string; min: number; max: number; count: number }[]
+  ratings:       { label: string; min: number; count: number }[]
+  flags: {
+    inStock:     number
+    onSale:      number
+    prime:       number
+    bestSeller:  number
+  }
 }
 
 function toSlug(text: string): string {
@@ -57,7 +58,7 @@ export class DepartmentsService {
     await this.products.ensureLoaded()
   }
 
-  // ── findAll — returns all departments with aggregated stats ───────────────
+  // ── findAll ───────────────────────────────────────────────────────────────
 
   async findAll(): Promise<DepartmentCard[]> {
     await this.ensureLoaded()
@@ -66,13 +67,12 @@ export class DepartmentsService {
       .sort((a, b) => b.productCount - a.productCount)
   }
 
-  // ── findOne — single department + full subcategory breakdown ─────────────
+  // ── findOne ───────────────────────────────────────────────────────────────
 
   async findOne(slugOrName: string): Promise<DepartmentCard & { products: any[] }> {
     await this.ensureLoaded()
     const deptMap = this.buildDeptMap()
 
-    // Match by slug or by raw dept name
     let entry: DepartmentCard | undefined =
       deptMap.get(slugOrName) ??
       [...deptMap.values()].find(d => d.slug === slugOrName)
@@ -84,7 +84,6 @@ export class DepartmentsService {
       })
     }
 
-    // Top 8 featured products for this department (best rated)
     const deptName = entry.name
     const deptProducts = this.products.products
       .filter(p => p.taxonomy_dept === deptName)
@@ -110,7 +109,7 @@ export class DepartmentsService {
     return { ...entry, products: deptProducts }
   }
 
-  // ── findSubcategory — products within a specific dept > subcat ────────────
+  // ── findSubcategory ───────────────────────────────────────────────────────
 
   async findSubcategory(
     deptSlugOrName: string,
@@ -120,14 +119,12 @@ export class DepartmentsService {
     await this.ensureLoaded()
     const { page = 1, limit = 20 } = opts
 
-    // Resolve dept
     const deptMap = this.buildDeptMap()
     const deptEntry = deptMap.get(deptSlugOrName) ??
       [...deptMap.values()].find(d => d.slug === deptSlugOrName)
 
     if (!deptEntry) throw new NotFoundException({ code: 'DEPARTMENT_NOT_FOUND' })
 
-    // Resolve subcat (by slug or raw name)
     const subcat = deptEntry.subcategories.find(
       s => s.slug === subcatSlugOrName || s.name === subcatSlugOrName,
     )
@@ -158,31 +155,219 @@ export class DepartmentsService {
       }))
 
     return {
-      department:   deptEntry.name,
-      deptSlug:     deptEntry.slug,
-      subcategory:  subcat.name,
-      subcatSlug:   subcat.slug,
-      priceRange:   subcat.priceRange,
-      avgRating:    subcat.avgRating,
-      products:     items,
+      department:  deptEntry.name,
+      deptSlug:    deptEntry.slug,
+      subcategory: subcat.name,
+      subcatSlug:  subcat.slug,
+      priceRange:  subcat.priceRange,
+      avgRating:   subcat.avgRating,
+      products:    items,
+      pagination:  { total, page, limit, totalPages, hasNext: page < totalPages },
+    }
+  }
+
+  // ── searchInDepartment ────────────────────────────────────────────────────
+
+  async searchInDepartment(
+    slugOrName: string,
+    opts: {
+      q?:           string
+      brand?:       string
+      subcategory?: string
+      minPrice?:    number
+      maxPrice?:    number
+      inStock?:     boolean
+      minRating?:   number
+      onSale?:      boolean
+      prime?:       boolean
+      page?:        number
+      limit?:       number
+      sortBy?:      'relevance' | 'price_asc' | 'price_desc' | 'rating' | 'reviews'
+    } = {},
+  ) {
+    await this.ensureLoaded()
+
+    const deptMap = this.buildDeptMap()
+    const deptEntry =
+      deptMap.get(slugOrName) ??
+      [...deptMap.values()].find(d => d.slug === slugOrName)
+
+    if (!deptEntry) {
+      throw new NotFoundException({
+        code:    'DEPARTMENT_NOT_FOUND',
+        message: `Department "${slugOrName}" not found`,
+      })
+    }
+
+    const {
+      q = '', brand, subcategory, minPrice, maxPrice,
+      inStock, minRating, onSale, prime,
+      page = 1, limit = 20,
+      sortBy = 'relevance',
+    } = opts
+
+    // ── 1. Filter to department ───────────────────────────────────────────
+    let deptProducts = this.products.products.filter(
+      p => p.taxonomy_dept === deptEntry.name,
+    )
+
+    // ── 2. Full-text search (title / brand / asin / slug) ─────────────────
+    const qLower = q.trim().toLowerCase()
+    if (qLower) {
+      const terms = qLower.split(/\s+/).filter(Boolean)
+      deptProducts = deptProducts.filter(p => {
+        const haystack = [p.title ?? '', p.brand ?? '', p.asin ?? '', p.slug ?? '']
+          .join(' ').toLowerCase()
+        return terms.every(t => haystack.includes(t))
+      })
+    }
+
+    // ── 3. Compute facets from query-matched set BEFORE filters ───────────
+    const facets = this.computeFacets(deptProducts)
+
+    // ── 4. Apply filters ──────────────────────────────────────────────────
+    let filtered = deptProducts
+
+    if (brand) {
+      const b = brand.toLowerCase()
+      filtered = filtered.filter(p => (p.brand ?? '').toLowerCase().includes(b))
+    }
+    if (subcategory) {
+      filtered = filtered.filter(
+        p => p.taxonomy_subcat === subcategory || toSlug(p.taxonomy_subcat ?? '') === subcategory,
+      )
+    }
+    if (minPrice !== undefined) filtered = filtered.filter(p => Number(p.price ?? 0) >= minPrice)
+    if (maxPrice !== undefined) filtered = filtered.filter(p => Number(p.price ?? 0) <= maxPrice)
+    if (inStock  === true)      filtered = filtered.filter(p => p.in_stock !== false)
+    if (minRating !== undefined) filtered = filtered.filter(p => Number(p.avg_rating ?? 0) >= minRating)
+    if (onSale   === true)      filtered = filtered.filter(p => p.is_on_sale === true)
+    if (prime    === true)      filtered = filtered.filter(p => p.is_prime === true)
+
+    // ── 5. Sort ───────────────────────────────────────────────────────────
+    switch (sortBy) {
+      case 'price_asc':  filtered.sort((a, b) => Number(a.price ?? 0) - Number(b.price ?? 0)); break
+      case 'price_desc': filtered.sort((a, b) => Number(b.price ?? 0) - Number(a.price ?? 0)); break
+      case 'rating':     filtered.sort((a, b) => Number(b.avg_rating ?? 0) - Number(a.avg_rating ?? 0)); break
+      case 'reviews':    filtered.sort((a, b) => Number(b.review_count ?? 0) - Number(a.review_count ?? 0)); break
+      default:
+        if (!qLower) filtered.sort((a, b) => Number(b.avg_rating ?? 0) - Number(a.avg_rating ?? 0))
+    }
+
+    // ── 6. Paginate ───────────────────────────────────────────────────────
+    const total      = filtered.length
+    const totalPages = Math.ceil(total / limit)
+    const items      = filtered
+      .slice((page - 1) * limit, page * limit)
+      .map(p => ({
+        asin:          p.asin,
+        slug:          p.slug,
+        title:         p.title ?? '',
+        brand:         (p.brand ?? '').replace(/^Visit the\s+|\s+Store\s*$/gi, '').trim(),
+        thumbnail:     p.thumbnail ?? null,
+        price:         Number(p.price ?? 0),
+        originalPrice: p.original_price ? Number(p.original_price) : null,
+        discountPct:   p.discount_pct ?? 0,
+        avgRating:     Number(p.avg_rating ?? 0),
+        reviewCount:   p.review_count ?? 0,
+        isPrime:       p.is_prime ?? false,
+        inStock:       p.in_stock ?? true,
+        isOnSale:      p.is_on_sale ?? false,
+        isBestSeller:  p.is_best_seller ?? false,
+        subcategory:   p.taxonomy_subcat ?? '',
+      }))
+
+    return {
+      department: deptEntry.name,
+      deptSlug:   deptEntry.slug,
+      query:      q || null,
+      filters:    { brand, subcategory, minPrice, maxPrice, inStock, minRating, onSale, prime },
+      sortBy,
+      products:   items,
+      facets,
       pagination: { total, page, limit, totalPages, hasNext: page < totalPages },
     }
   }
 
-  // ── Private: build dept map from in-memory products ──────────────────────
+  // ── Private: facets ───────────────────────────────────────────────────────
+
+  private computeFacets(products: any[]): DeptSearchFacets {
+    const subcatMap = new Map<string, number>()
+    const brandMap  = new Map<string, number>()
+    const flags     = { inStock: 0, onSale: 0, prime: 0, bestSeller: 0 }
+
+    const PRICE_BUCKETS = [
+      { label: 'Under $25',   min: 0,   max: 24.99,   count: 0 },
+      { label: '$25 – $50',   min: 25,  max: 49.99,   count: 0 },
+      { label: '$50 – $100',  min: 50,  max: 99.99,   count: 0 },
+      { label: '$100 – $200', min: 100, max: 199.99,  count: 0 },
+      { label: 'Over $200',   min: 200, max: Infinity, count: 0 },
+    ]
+
+    const RATING_BUCKETS = [
+      { label: '4★ & up', min: 4, count: 0 },
+      { label: '3★ & up', min: 3, count: 0 },
+      { label: '2★ & up', min: 2, count: 0 },
+    ]
+
+    for (const p of products) {
+      const subcat = (p.taxonomy_subcat ?? '').trim()
+      if (subcat) subcatMap.set(subcat, (subcatMap.get(subcat) ?? 0) + 1)
+
+      const brand = (p.brand ?? '').replace(/^Visit the\s+|\s+Store\s*$/gi, '').trim()
+      if (brand) brandMap.set(brand, (brandMap.get(brand) ?? 0) + 1)
+
+      const price = Number(p.price ?? 0)
+      for (const b of PRICE_BUCKETS) {
+        if (price >= b.min && price <= b.max) { b.count++; break }
+      }
+
+      const rating = Number(p.avg_rating ?? 0)
+      for (const b of RATING_BUCKETS) {
+        if (rating >= b.min) b.count++
+      }
+
+      if (p.in_stock !== false)    flags.inStock++
+      if (p.is_on_sale === true)   flags.onSale++
+      if (p.is_prime === true)     flags.prime++
+      if (p.is_best_seller === true) flags.bestSeller++
+    }
+
+    return {
+      subcategories: [...subcatMap.entries()]
+        .map(([name, count]) => ({ name, slug: toSlug(name), count }))
+        .sort((a, b) => b.count - a.count),
+
+      brands: [...brandMap.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 30),
+
+      priceRanges: PRICE_BUCKETS
+        .filter(b => b.count > 0)
+        .map(({ label, min, max, count }) => ({
+          label, min, count,
+          max: max === Infinity ? -1 : max,
+        })),
+
+      ratings: RATING_BUCKETS.filter(b => b.count > 0),
+      flags,
+    }
+  }
+
+  // ── Private: build dept map ───────────────────────────────────────────────
 
   private buildDeptMap(): Map<string, DepartmentCard> {
     const map = new Map<string, DepartmentCard>()
 
     for (const p of this.products.products) {
-      const dept   = (p.taxonomy_dept    ?? '').trim()
-      const subcat = (p.taxonomy_subcat  ?? '').trim()
+      const dept   = (p.taxonomy_dept   ?? '').trim()
+      const subcat = (p.taxonomy_subcat ?? '').trim()
       const price  = Number(p.price ?? 0)
       const rating = Number(p.avg_rating ?? 0)
 
       if (!dept) continue
 
-      // ── Department level ────────────────────────────────────────────────
       if (!map.has(dept)) {
         map.set(dept, {
           slug:         toSlug(dept),
@@ -196,6 +381,7 @@ export class DepartmentsService {
           flags:        { bestSellerCount: 0, onSaleCount: 0, primeCount: 0, trendingCount: 0 },
         })
       }
+
       const dEntry = map.get(dept)!
       dEntry.productCount++
       if (price > 0) {
@@ -203,23 +389,18 @@ export class DepartmentsService {
         if (price > dEntry.priceRange.max) dEntry.priceRange.max = price
       }
       dEntry.avgRating = ((dEntry.avgRating * (dEntry.productCount - 1)) + rating) / dEntry.productCount
-
-      // Thumbnail: use first product with an image
       if (!dEntry.thumbnail && p.thumbnail) dEntry.thumbnail = p.thumbnail
 
-      // Flag counters
       if (p.is_best_seller) dEntry.flags.bestSellerCount++
       if (p.is_on_sale)     dEntry.flags.onSaleCount++
       if (p.is_prime)       dEntry.flags.primeCount++
       if (p.is_trending)    dEntry.flags.trendingCount++
 
-      // Top brands (unique, up to 10)
       const brand = (p.brand ?? '').replace(/^Visit the\s+|\s+Store\s*$/gi, '').trim()
       if (brand && dEntry.topBrands.length < 10 && !dEntry.topBrands.includes(brand)) {
         dEntry.topBrands.push(brand)
       }
 
-      // ── Subcategory level ───────────────────────────────────────────────
       if (!subcat) continue
 
       let sub = dEntry.subcategories.find(s => s.name === subcat)
@@ -235,7 +416,6 @@ export class DepartmentsService {
       sub.avgRating = ((sub.avgRating * (sub.productCount - 1)) + rating) / sub.productCount
     }
 
-    // Clean up Infinity values and sort subcategories
     for (const d of map.values()) {
       if (d.priceRange.min === Infinity) d.priceRange.min = 0
       d.priceRange.min = Math.round(d.priceRange.min * 100) / 100
