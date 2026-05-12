@@ -46,7 +46,9 @@ export class PaymentsService {
         'SELECT * FROM store.orders WHERE id = $1 FOR UPDATE', [orderId],
       ).then(r => r.rows[0])
 
-      if (order.payment?.method !== 'card') {
+      // Migration 007 replaced the legacy `payment` JSONB column with a plain
+      // `payment_method` TEXT column ('card' | 'cod' | 'wallet').
+      if (order.payment_method !== 'card') {
         throw new BadRequestException({ code: 'WRONG_PAYMENT_METHOD' })
       }
 

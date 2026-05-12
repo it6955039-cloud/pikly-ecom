@@ -67,7 +67,11 @@ export class OrdersController {
     @Body() dto: CreateOrderDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    const data = await this.ordersService.createOrder(userId, dto)
+    // Merge header-sourced idempotency key into the DTO so the service can
+    // deduplicate retries.  Header takes priority; body field is the fallback
+    // for clients that embed it in JSON instead.
+    const mergedDto = { ...dto, idempotencyKey: idempotencyKey ?? dto.idempotencyKey }
+    const data = await this.ordersService.createOrder(userId, mergedDto)
     return successResponse(data)
   }
 

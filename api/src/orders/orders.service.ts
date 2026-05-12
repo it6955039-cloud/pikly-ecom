@@ -58,10 +58,16 @@ export class OrdersService {
     const orderId = await this.nextOrderId()
 
     for (const item of cartData.items) {
-      if (!this.products.findProductByAsin(item.asin)) {
+      // Cart stores items with `productId` (either an ASIN or a slug).
+      // We must check both lookup paths to mirror the same logic used in
+      // cart.service.ts → addItem().
+      const found =
+        this.products.findProductByAsin(item.productId) ??
+        this.products.findProductBySlug(item.productId)
+      if (!found) {
         throw new BadRequestException({
           code: 'PRODUCT_NOT_FOUND',
-          message: `Product ${item.asin} not found`,
+          message: `Product ${item.productId} not found`,
         })
       }
     }
