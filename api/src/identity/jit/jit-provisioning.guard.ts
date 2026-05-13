@@ -15,12 +15,28 @@
  *      to request as req.verifiedToken.
  *   2. This guard runs second (after middleware, before controller).
  *   3. If GIM resolves the externalId → proceed normally.
- *   4. If GIM returns null → call IIdentityService.provisionUser() RIGHT NOW.
- *      This is the "Just-In-Time" provision step.
+ *   4. If GIM returns null → disambiguate before acting:
+ *        a. isDeactivated() → true  ⟹ account was explicitly deactivated
+ *                                       by an admin; reject with 403.
+ *        b. isDeactivated() → false ⟹ user is new (webhook in-flight);
+ *                                       provision Just-In-Time and proceed.
  *   5. The provisioned user is written to DB + identity_mapping atomically.
  *   6. The Outbox records the event so any secondary systems stay consistent.
  *   7. If a concurrent request already provisioned the user (race-on-race),
  *      the upsertMapping() ON CONFLICT handles it gracefully.
+ *
+ * Security fix (v2 → v3):
+ *   Previously, a GIM null-result unconditionally triggered JIT provisioning.
+ *   Because upsertMapping() used ON CONFLICT DO UPDATE SET is_active = true,
+ *   any deactivated user who retained a valid Clerk JWT could call any
+ *   protected endpoint and have their account silently re-activated.
+ *
+ *   The fix is a two-part defence-in-depth:
+ *     1. isDeactivated() check here — rejects deactivated users before
+ *        upsertMapping() is ever called, regardless of upsert behaviour.
+ *     2. upsertMapping() no longer sets is_active on ON CONFLICT — a second
+ *        layer that prevents silent re-activation even if this guard is
+ *        bypassed or mis-configured in future.
  *
  * Idempotency guarantee:
  *   upsertMapping() uses PostgreSQL ON CONFLICT DO UPDATE — safe under any
@@ -34,6 +50,7 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   Logger,
   UnauthorizedException,
@@ -49,19 +66,19 @@ export const SKIP_JIT_KEY = 'skipJitProvisioning'
  * Attach to a handler to skip JIT provisioning.
  * Used on public endpoints where req.identity is populated by OptionalIdentityGuard.
  */
-export const SkipJit = () =>
-  (target: object, key?: string | symbol, descriptor?: PropertyDescriptor) => {
+export const SkipJit =
+  () => (target: object, key?: string | symbol, descriptor?: PropertyDescriptor) => {
     Reflect.defineMetadata(SKIP_JIT_KEY, true, descriptor?.value ?? target)
     return descriptor ?? target
   }
 
-// Shape attached to request by ClerkAuthMiddleware — validated here before use
+/** Shape attached to request by ClerkAuthMiddleware — validated here before use */
 interface RequestWithVerifiedToken {
   verifiedToken?: {
     externalId: string
-    email:      string
-    role:       'customer' | 'admin'
-    jti?:       string
+    email: string
+    role: 'customer' | 'admin'
+    jti?: string
     expiresAt?: string
   }
   identity?: ResolvedIdentity
@@ -87,8 +104,8 @@ export class JitProvisioningGuard implements CanActivate {
   private readonly logger = new Logger(JitProvisioningGuard.name)
 
   constructor(
-    private readonly identityService: IIdentityService,  // SINGLETON — safe direct inject
-    private readonly moduleRef: ModuleRef,                // for REQUEST-scoped GIM resolution
+    private readonly identityService: IIdentityService, // SINGLETON — safe direct inject
+    private readonly moduleRef: ModuleRef, // for REQUEST-scoped GIM resolution
     private readonly reflector: Reflector,
   ) {}
 
@@ -103,11 +120,11 @@ export class JitProvisioningGuard implements CanActivate {
     const req = context.switchToHttp().getRequest<RequestWithVerifiedToken>()
 
     // ClerkAuthMiddleware MUST have run first and attached verifiedToken.
-    // If it's missing the middleware chain is misconfigured — fail hard.
+    // If it is missing the middleware chain is misconfigured — fail hard.
     if (!req.verifiedToken) {
       this.logger.error(
-        'JitProvisioningGuard: req.verifiedToken is missing. ' +
-        'Ensure ClerkAuthMiddleware runs before this guard in the pipeline.',
+        '[JIT] req.verifiedToken is missing. ' +
+          'Ensure ClerkAuthMiddleware runs before this guard in the pipeline.',
       )
       throw new UnauthorizedException({ code: 'AUTH_PIPELINE_MISCONFIGURED' })
     }
@@ -120,37 +137,56 @@ export class JitProvisioningGuard implements CanActivate {
     const contextId = ContextIdFactory.getByRequest(req as any)
     this.moduleRef.registerRequestByContextId(req, contextId)
     const gim = await this.moduleRef.resolve(IdentityMappingService, contextId, {
-      strict: false,  // allow resolution across module boundaries
+      strict: false, // allow resolution across module boundaries
     })
 
     // ── L1/L2 resolution attempt ─────────────────────────────────────────
     let internalId = await gim.resolve(externalId)
 
     if (!internalId) {
-      // ── JIT Provision ──────────────────────────────────────────────────
+      // ── Deactivation gate — must run before any provisioning attempt ───
+      //
+      // resolve() returns null for two distinct reasons:
+      //   A. No mapping exists at all          → new user, safe to provision
+      //   B. Mapping exists with is_active=false → deactivated by admin, reject
+      //
+      // Without this check, path B would fall through to provisionUser() which
+      // calls upsertMapping(). Even though upsertMapping() no longer silently
+      // resets is_active (fixed in v3), attempting provisioning for a known-
+      // deactivated account is semantically wrong and should fail loudly.
+      const deactivated = await gim.isDeactivated(externalId)
+
+      if (deactivated) {
+        this.logger.warn(`[JIT] Rejected request for deactivated account: ${externalId} (${email})`)
+        throw new ForbiddenException({
+          code: 'ACCOUNT_DEACTIVATED',
+          message:
+            'This account has been deactivated. Contact support if you believe this is an error.',
+        })
+      }
+
+      // ── JIT Provision — only reached for genuinely new users ──────────
       this.logger.log(
-        `[JIT] No mapping for ${externalId} (${email}). ` +
-        `Provisioning user Just-In-Time...`,
+        `[JIT] No active mapping for ${externalId} (${email}). ` +
+          `Provisioning user Just-In-Time...`,
       )
 
       try {
         internalId = await this.identityService.provisionUser({
           externalId,
           email,
-          firstName:  this.extractFirstName(email),
-          lastName:   '',
-          role:       role ?? 'customer',
-          source:     'jit_guard',
+          firstName: this.extractFirstName(email),
+          lastName: '',
+          role: role ?? 'customer',
+          source: 'jit_guard',
         })
 
-        this.logger.log(
-          `[JIT] Successfully provisioned ${externalId} → ${internalId}`,
-        )
+        this.logger.log(`[JIT] Successfully provisioned ${externalId} → ${internalId}`)
       } catch (provisionErr: unknown) {
         const msg = provisionErr instanceof Error ? provisionErr.message : String(provisionErr)
         this.logger.error(`[JIT] Provisioning failed for ${externalId}: ${msg}`)
         throw new UnauthorizedException({
-          code:    'JIT_PROVISIONING_FAILED',
+          code: 'JIT_PROVISIONING_FAILED',
           message: 'User account setup is in progress. Please retry in a moment.',
         })
       }
@@ -161,7 +197,7 @@ export class JitProvisioningGuard implements CanActivate {
       internalId,
       externalId,
       email,
-      role:       role ?? 'customer',
+      role: role ?? 'customer',
       sessionCtx: 'clerk_production',
       expiresAt,
       jti,
@@ -172,12 +208,17 @@ export class JitProvisioningGuard implements CanActivate {
   }
 
   /**
-   * Fallback: derive a placeholder firstName from email prefix.
-   * The Clerk webhook will overwrite this with the real name once it arrives.
+   * Derive a placeholder firstName from an email address prefix.
+   * The Clerk webhook (user.created) will overwrite this with the real name
+   * once it arrives — this is only used for the narrow JIT race window.
+   *
+   * Examples:
+   *   "john.doe@example.com"  → "John Doe"
+   *   "ali_khan@example.com"  → "Ali Khan"
+   *   "user123@example.com"   → "User123"
    */
   private extractFirstName(email: string): string {
     const prefix = email.split('@')[0] ?? 'User'
-    // Capitalise first letter, replace dots/underscores with space
     return prefix
       .replace(/[._]/g, ' ')
       .replace(/\b\w/g, (c) => c.toUpperCase())
