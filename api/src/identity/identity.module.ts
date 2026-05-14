@@ -36,7 +36,6 @@
  */
 
 import {
-  DynamicModule,
   Logger,
   MiddlewareConsumer,
   Module,
@@ -46,31 +45,32 @@ import {
 } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 
-import { IIdentityService, SHOWCASE_IDENTITY_SERVICE } from './ports/identity.port'
+import { RedisService } from '../redis/redis.service'
 import { ClerkProductionAdapter } from './adapters/clerk-production.adapter'
 import { LegacyShowcaseAdapter } from './adapters/legacy-showcase.adapter'
-import { IdentityMappingService } from './gim/identity-mapping.service'
-import { OutboxService } from './outbox/outbox.service'
-import { OutboxProcessorService } from './outbox/outbox.processor'
-import { ClerkAuthMiddleware } from './middleware/clerk-auth.middleware'
-import { ShadowSessionMiddleware } from './middleware/shadow-session.middleware'
 import { ClerkWebhookController } from './clerk/clerk-webhook.controller'
+import { IdentityMappingService } from './gim/identity-mapping.service'
 import {
+  OptionalIdentityGuard,
   RequireAuthGuard,
   RequireRoleGuard,
-  OptionalIdentityGuard,
   ShowcaseAuthGuard,
   ShowcaseRoleGuard,
 } from './guards/identity.guards'
 import { JitProvisioningGuard } from './jit/jit-provisioning.guard'
+import { ClerkAuthMiddleware } from './middleware/clerk-auth.middleware'
+import { ShadowSessionMiddleware } from './middleware/shadow-session.middleware'
+import { OutboxProcessorService } from './outbox/outbox.processor'
+import { OutboxService } from './outbox/outbox.service'
+import { IIdentityService, SHOWCASE_IDENTITY_SERVICE } from './ports/identity.port'
 
 // Re-export everything consumers need — they import from this barrel, not
 // from individual files (prevents accidental deep imports that bypass DI)
-export * from './ports/identity.port'
+export * from './decorators/identity.decorators'
 export * from './guards/identity.guards'
 export { JitProvisioningGuard, SkipJit } from './jit/jit-provisioning.guard'
-export * from './decorators/identity.decorators'
 export * from './middleware/shadow-session.middleware'
+export * from './ports/identity.port'
 
 @Module({
   imports: [ConfigModule],
@@ -78,26 +78,29 @@ export * from './middleware/shadow-session.middleware'
     // ── Primary (Production) Adapter ───────────────────────────────────────
     {
       provide: IIdentityService,
-      useFactory: (config: ConfigService, gim: IdentityMappingService, outbox: OutboxService) => {
+      useFactory: (
+        config: ConfigService,
+        gim: IdentityMappingService,
+        outbox: OutboxService,
+        redis: RedisService,
+      ) => {
         const provider = config.get<string>('IDENTITY_PROVIDER', 'clerk')
 
         if (provider === 'legacy') {
-          // Emergency rollback path — logs a prominent warning
+          // Emergency rollback path — production traffic is routed through the
+          // legacy adapter instead of Clerk.
           const logger = new Logger('IdentityModule')
           logger.warn(
             '⚠️  ROLLBACK MODE: IDENTITY_PROVIDER=legacy. ' +
               'Production traffic is routing through LegacyShowcaseAdapter. ' +
               'This should only be used for emergency rollback.',
           )
-          // In rollback mode, the legacy adapter serves production
-          // We inject null for RedisService here — the DI framework provides it
-          // via the actual provider below; this factory just needs the right class
+          return new LegacyShowcaseAdapter(config, redis)
         }
 
-        // Default: always use Clerk for production
         return new ClerkProductionAdapter(config, gim, outbox)
       },
-      inject: [ConfigService, IdentityMappingService, OutboxService],
+      inject: [ConfigService, IdentityMappingService, OutboxService, RedisService],
     },
 
     // ── Showcase (Dormant Secondary) Adapter ───────────────────────────────
