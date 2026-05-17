@@ -1,3 +1,13 @@
+/**
+ * @file admin/admin-products.controller.ts
+ *
+ * Fixes:
+ *   BUG-TOGGLE  — toggle() now reads current is_active directly from DB
+ *                 (products[] only contains active rows — inactive always threw 404)
+ *   BUG-DELETE  — adminDelete() now hard-deletes from DB
+ *                 (previously was soft-delete: SET is_active = false)
+ */
+
 import {
   Controller,
   Get,
@@ -13,15 +23,14 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger'
-import { RequireRoleGuard }     from '../identity/guards/identity.guards'
-import { JitProvisioningGuard } from '../identity/jit/jit-provisioning.guard'
-import { RequireRole }          from '../identity/guards/identity.guards'
-
-
-import { ProductsService } from '../products/products.service'
+import { RequireRoleGuard }      from '../identity/guards/identity.guards'
+import { JitProvisioningGuard }  from '../identity/jit/jit-provisioning.guard'
+import { RequireRole }           from '../identity/guards/identity.guards'
+import { ProductsService }       from '../products/products.service'
 import { AdminCreateProductDto } from '../products/dto/admin-create-product.dto'
 import { AdminUpdateProductDto } from '../products/dto/admin-update-product.dto'
-import { successResponse } from '../common/api-utils'
+import { DatabaseService }       from '../database/database.service'
+import { successResponse }       from '../common/api-utils'
 
 @ApiTags('Admin — Products')
 @ApiBearerAuth()
@@ -29,29 +38,36 @@ import { successResponse } from '../common/api-utils'
 @RequireRole('admin')
 @Controller('admin/products')
 export class AdminProductsController {
-  constructor(private readonly productsService: ProductsService) {}
+  constructor(
+    private readonly productsService: ProductsService,
+    private readonly db:              DatabaseService,
+  ) {}
+
+  // ── List ───────────────────────────────────────────────────────────────────
 
   @Get()
   @ApiOperation({ summary: '[Admin] List all products with search and pagination' })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'limit', required: false })
-  @ApiQuery({ name: 'search', required: false })
-  @ApiQuery({ name: 'isActive', required: false })
+  @ApiQuery({ name: 'page',     required: false })
+  @ApiQuery({ name: 'limit',    required: false })
+  @ApiQuery({ name: 'search',   required: false })
+  @ApiQuery({ name: 'isActive', required: false, description: 'true | false — omit for all' })
   async findAll(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-    @Query('search') search?: string,
+    @Query('page')     page?:     number,
+    @Query('limit')    limit?:    number,
+    @Query('search')   search?:   string,
     @Query('isActive') isActive?: string,
   ) {
     return successResponse(
       await this.productsService.adminFindAll({
-        page: page ? Number(page) : 1,
-        limit: limit ? Number(limit) : 20,
+        page:     page  ? Number(page)  : 1,
+        limit:    limit ? Number(limit) : 20,
         search,
         isActive: isActive !== undefined ? isActive === 'true' : undefined,
       }),
     )
   }
+
+  // ── Create ─────────────────────────────────────────────────────────────────
 
   @Post()
   @ApiOperation({ summary: '[Admin] Create a new product' })
@@ -59,34 +75,50 @@ export class AdminProductsController {
     return successResponse(await this.productsService.adminCreate(body))
   }
 
+  // ── Update ─────────────────────────────────────────────────────────────────
+
   @Patch(':id')
-  @ApiOperation({ summary: '[Admin] Update product by id' })
-  @ApiParam({ name: 'id' })
+  @ApiOperation({ summary: '[Admin] Update product fields by ASIN' })
+  @ApiParam({ name: 'id', description: 'Product ASIN' })
   async update(@Param('id') id: string, @Body() body: AdminUpdateProductDto) {
     return successResponse(await this.productsService.adminUpdate(id, body))
   }
 
+  // ── Toggle active / inactive ───────────────────────────────────────────────
+
   @Patch(':id/toggle')
-  @ApiOperation({ summary: '[Admin] Toggle product active/inactive' })
-  @ApiParam({ name: 'id' })
+  @ApiOperation({
+    summary:     '[Admin] Toggle product active / inactive',
+    description: 'Reads current state from DB directly — not from in-memory array.',
+  })
+  @ApiParam({ name: 'id', description: 'Product ASIN' })
   async toggle(@Param('id') id: string) {
-    const current =
-      this.productsService.findProductByAsin(id) ??
-      this.productsService.products.find((p: any) => p.id === id) // include inactive
-    if (!current)
+    const row = await this.db.queryOne<{ asin: string; is_active: boolean }>(
+      `SELECT asin, is_active FROM store.products WHERE asin = $1`,
+      [id],
+    )
+
+    if (!row) {
       throw new NotFoundException({
-        code: 'PRODUCT_NOT_FOUND',
+        code:    'PRODUCT_NOT_FOUND',
         message: `Product "${id}" not found`,
       })
+    }
+
     return successResponse(
-      await this.productsService.adminUpdate(id, { is_active: !(current.is_active ?? current.isActive) }),
+      await this.productsService.adminUpdate(id, { is_active: !row.is_active }),
     )
   }
 
+  // ── Hard Delete ────────────────────────────────────────────────────────────
+
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: '[Admin] Delete a product permanently' })
-  @ApiParam({ name: 'id' })
+  @ApiOperation({
+    summary:     '[Admin] Permanently delete a product',
+    description: 'Hard-deletes the row. Use toggle to temporarily hide instead.',
+  })
+  @ApiParam({ name: 'id', description: 'Product ASIN' })
   async remove(@Param('id') id: string) {
     return successResponse(await this.productsService.adminDelete(id))
   }

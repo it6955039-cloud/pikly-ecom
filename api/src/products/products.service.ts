@@ -8,6 +8,10 @@
 //  • source default changed from 'oxylabs' to 'pikly' in response shape
 //  • findAll(): two-tier cache (L1 NodeCache + L2 Redis/Upstash) — cacheHit now works
 //
+// FIX v5.1:
+//  • adminDelete() — changed from soft-delete (SET is_active = false) to
+//    hard-delete (DELETE FROM store.products). Toggle handles soft disable.
+//
 import {
   BadRequestException,
   Injectable,
@@ -95,12 +99,6 @@ export function toCard(p: any) {
 }
 
 // ── Helpful votes normaliser ──────────────────────────────────────────────────
-//
-// oxylabs: "84 people found this helpful"  → 84
-// pikly:   ""                              → 0
-// pikly:   "2 people found this helpful"   → 2
-// either:  number                          → as-is
-//
 function parseHelpfulVotes(v: any): number {
   if (typeof v === 'number') return v
   const m = String(v ?? '').match(/\d+/)
@@ -124,8 +122,6 @@ export class ProductsService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    // Load products in the background so Nest can finish startup.
-    // The in-memory store is still protected by ensureLoaded() for requests.
     this.loadingPromise = this.initializeAsync()
   }
 
@@ -135,9 +131,6 @@ export class ProductsService implements OnModuleInit {
       await this.db.waitUntilReady()
       await this.loadProducts()
       this.logger.log('Products initialized successfully')
-      // Subscribe AFTER the initial load is confirmed good.
-      // If loadProducts() throws, we never register the subscriber, which is
-      // correct behaviour — the store would be in an unknown state.
       this.redis.subscribe('products:invalidate', () => {
         this.loadProducts().catch((err) =>
           this.logger.error(`products:invalidate reload failed: ${err.message}`),
@@ -155,10 +148,6 @@ export class ProductsService implements OnModuleInit {
   }
 
   async loadProducts() {
-    // IMPORTANT: only fetch lightweight scalar columns here.
-    // Heavy JSONB columns are fetched ON-DEMAND in findOne().
-    // thumbnails (TEXT[]) is lightweight enough to include here — it is used
-    // in toCard() and does not transfer the bulk of heavy JSONB data.
     this.products = await this.db.query<any>(
       `SELECT asin, slug, source, is_active,
               taxonomy_dept, taxonomy_subcat,
@@ -185,71 +174,58 @@ export class ProductsService implements OnModuleInit {
     await this.redis.publish('products:invalidate', Date.now().toString())
   }
 
-  findActiveProducts() {
-    return this.products
-  }
-  findProductByAsin(asin: string) {
-    return this.products.find((p) => p.asin === asin)
-  }
-  findProductBySlug(slug: string) {
-    return this.products.find((p) => p.slug === slug)
-  }
+  findActiveProducts() { return this.products }
+  findProductByAsin(asin: string) { return this.products.find((p) => p.asin === asin) }
+  findProductBySlug(slug: string) { return this.products.find((p) => p.slug === slug) }
 
   async getFeatured(limit = 20) {
     await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_amazon_choice || p.is_best_seller)
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit)
-      .map(toCard)
+      .slice(0, limit).map(toCard)
   }
   async getBestSellers(limit = 20) {
     await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_best_seller)
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit)
-      .map(toCard)
+      .slice(0, limit).map(toCard)
   }
   async getNewArrivals(limit = 20) {
     await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_new_release)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, limit)
-      .map(toCard)
+      .slice(0, limit).map(toCard)
   }
   async getTrending(limit = 20) {
     await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_trending)
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit)
-      .map(toCard)
+      .slice(0, limit).map(toCard)
   }
   async getTopRated(limit = 20) {
     await this.ensureLoaded()
     return this.products
       .filter((p) => p.is_top_rated || (gRating(p) >= 4.5 && gReviews(p) >= 100))
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit)
-      .map(toCard)
+      .slice(0, limit).map(toCard)
   }
   async getOnSale(limit = 20) {
     await this.ensureLoaded()
     return this.products
       .filter((p) => gOnSale(p) || gDisc(p) >= 10)
       .sort((a, b) => gDisc(b) - gDisc(a))
-      .slice(0, limit)
-      .map(toCard)
+      .slice(0, limit).map(toCard)
   }
   async getByDept(dept: string, limit = 20) {
     await this.ensureLoaded()
     return this.products
       .filter((p) => gDept(p).toLowerCase() === dept.toLowerCase())
       .sort((a, b) => gRating(b) - gRating(a))
-      .slice(0, limit)
-      .map(toCard)
+      .slice(0, limit).map(toCard)
   }
 
   async getSuggestions(q: string, limit = 8) {
@@ -273,8 +249,6 @@ export class ProductsService implements OnModuleInit {
   }
 
   async findAll(query: FilterProductsDto) {
-    // ── Two-tier cache check (L1 NodeCache + L2 Redis/Upstash) ───────────────
-    // Stable key: sort query keys so {a:1,b:2} and {b:2,a:1} hit the same entry
     const sortedQuery = Object.keys(query as any)
       .sort()
       .reduce((acc: any, k) => { acc[k] = (query as any)[k]; return acc }, {})
@@ -285,19 +259,16 @@ export class ProductsService implements OnModuleInit {
       return { data: cached.value, cacheHit: true, cacheTier: cached.tier }
     }
 
-    // ── Cache miss — run Algolia search ──────────────────────────────────────
     await this.ensureLoaded()
     await this.categories.ensureLoaded()
     const categories = this.categories.findAll()
     const result = await this.algolia.fullSearch(query as any, this.products, categories)
 
-    // Persist to both L1 (NodeCache) and L2 (Redis/Upstash)
     this.cache.set(cacheKey, result.data, TTL.PRODUCTS)
 
     return { data: result.data, cacheHit: false, cacheTier: 'none' }
   }
 
-  // ── findOne — canonical enterprise response shape ──────────────────────────
   async findOne(slugOrAsin: string) {
     await this.ensureLoaded()
     const p = this.findProductBySlug(slugOrAsin) ?? this.findProductByAsin(slugOrAsin)
@@ -307,9 +278,6 @@ export class ProductsService implements OnModuleInit {
         message: `Product "${slugOrAsin}" not found`,
       })
 
-    // Fetch heavy JSONB columns on-demand for this single product only.
-    // enrichment_source_data added here (pikly v5) — contains asinVariationValues,
-    // highResolutionImages, reviews with media, etc.
     const full =
       (await this.db.queryOne<any>(
         `SELECT product_results, purchase_options, protection_plan,
@@ -327,7 +295,6 @@ export class ProductsService implements OnModuleInit {
       .slice(0, 8)
       .map(toCard)
 
-    // bought_together comes from Discovery Engine output (stored in DB column)
     const rawBt: any[] = full.bought_together ?? []
     const frequentlyBoughtWith = rawBt.slice(0, 4).map((b: any) => ({
       asin:      b.asin ?? '',
@@ -362,13 +329,10 @@ export class ProductsService implements OnModuleInit {
         bestsellers_rank:    p.bestsellers_rank       ?? [],
       },
 
-      // enrichment_source_data: pikly-specific enrichment context.
-      // Contains asinVariationValues, highResolutionImages, productInformation,
-      // manufacturerProductImages, reviews (with media images), etc.
       enrichment_source_data: full.enrichment_source_data ?? {},
 
       _taxonomy: {
-        department:  p.taxonomy_dept  ?? '',
+        department:  p.taxonomy_dept   ?? '',
         subcategory: p.taxonomy_subcat ?? '',
       },
 
@@ -389,11 +353,11 @@ export class ProductsService implements OnModuleInit {
         isPrime:       gPrime(p),
         stockStatus:   gInStock(p) ? 'in_stock' : 'out_of_stock',
         deliveryEstimate: {
-          options:    sf.deliveryOptions ?? full.product_results?.delivery ?? [],
-          isFree:     sf.isFreeShipping  ?? gPrime(p),
-          isPrime:    gPrime(p),
-          soldBy:     sf.soldBy          ?? '',
-          shipsFrom:  sf.shipsFrom       ?? '',
+          options:   sf.deliveryOptions ?? full.product_results?.delivery ?? [],
+          isFree:    sf.isFreeShipping  ?? gPrime(p),
+          isPrime:   gPrime(p),
+          soldBy:    sf.soldBy          ?? '',
+          shipsFrom: sf.shipsFrom       ?? '',
         },
         relatedProducts:      related,
         frequentlyBoughtWith,
@@ -424,7 +388,6 @@ export class ProductsService implements OnModuleInit {
         (a: any, b: any) => new Date(b.date ?? 0).getTime() - new Date(a.date ?? 0).getTime(),
       )
     else if (sort === 'helpful')
-      // Fixed: parseHelpfulVotes handles both "" and "N people found this helpful"
       reviews.sort(
         (a: any, b: any) => parseHelpfulVotes(b.helpful_votes) - parseHelpfulVotes(a.helpful_votes),
       )
@@ -444,8 +407,6 @@ export class ProductsService implements OnModuleInit {
   }
 
   async submitReview(slugOrAsin: string, userId: string, dto: SubmitReviewDto) {
-    // Resolve the canonical product first — the controller passes a slug, but
-    // product_reviews.asin must store the actual ASIN, not the slug.
     const p = this.findProductBySlug(slugOrAsin) ?? this.findProductByAsin(slugOrAsin)
     if (!p)
       throw new NotFoundException({
@@ -511,17 +472,16 @@ export class ProductsService implements OnModuleInit {
     const row = await this.db.queryOne<any>(
       `INSERT INTO store.products (asin,slug,title,brand,price,original_price,discount_pct,thumbnail,taxonomy_dept,taxonomy_subcat,is_active,source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pikly') RETURNING asin,slug,title,brand,price,is_active`,
       [
-        asin,
-        slug,
-        data.title         ?? '',
-        data.brand         ?? '',
-        data.price         ?? 0,
-        data.originalPrice ?? null,
-        data.discountPct   ?? 0,
-        data.thumbnail     ?? null,
-        data.taxonomyDept  ?? '',
+        asin, slug,
+        data.title          ?? '',
+        data.brand          ?? '',
+        data.price          ?? 0,
+        data.originalPrice  ?? null,
+        data.discountPct    ?? 0,
+        data.thumbnail      ?? null,
+        data.taxonomyDept   ?? '',
         data.taxonomySubcat ?? '',
-        data.isActive      ?? true,
+        data.isActive       ?? true,
       ],
     )
     await this.invalidate()
@@ -530,15 +490,8 @@ export class ProductsService implements OnModuleInit {
 
   async adminUpdate(asin: string, data: any) {
     const allowed = [
-      'title',
-      'brand',
-      'price',
-      'original_price',
-      'discount_pct',
-      'is_active',
-      'thumbnail',
-      'taxonomy_dept',
-      'taxonomy_subcat',
+      'title', 'brand', 'price', 'original_price', 'discount_pct',
+      'is_active', 'thumbnail', 'taxonomy_dept', 'taxonomy_subcat',
     ]
     const sets = ['updated_at = NOW()']
     const vals: any[] = []
@@ -554,13 +507,30 @@ export class ProductsService implements OnModuleInit {
       }
     }
     vals.push(asin)
-    await this.db.execute(`UPDATE store.products SET ${sets.join(', ')} WHERE asin = $${i}`, vals)
+    await this.db.execute(
+      `UPDATE store.products SET ${sets.join(', ')} WHERE asin = $${i}`,
+      vals,
+    )
     await this.invalidate()
     return { updated: true }
   }
 
   async adminDelete(asin: string) {
-    await this.db.execute('UPDATE store.products SET is_active = false WHERE asin = $1', [asin])
+    // ── HARD DELETE ───────────────────────────────────────────────────────────
+    // Previously: UPDATE store.products SET is_active = false (soft-delete)
+    // Now:        DELETE FROM store.products — permanent removal.
+    //
+    // Use toggle (adminUpdate + is_active: false) to temporarily hide a product.
+    // Use this method only when permanent removal is intended.
+    const n = await this.db.execute(
+      'DELETE FROM store.products WHERE asin = $1',
+      [asin],
+    )
+    if (n === 0)
+      throw new NotFoundException({
+        code:    'PRODUCT_NOT_FOUND',
+        message: `Product "${asin}" not found`,
+      })
     await this.invalidate()
     return { deleted: true }
   }
