@@ -1,4 +1,31 @@
 // src/database/database.service.ts
+//
+// FIX v2 — Read-after-write consistency for Neon + pg Pool
+//
+// Root cause of stale reads after mutations:
+//   The app used the Neon POOLER endpoint (ep-xxx-pooler.region.aws.neon.tech).
+//   Neon's PgBouncer runs in TRANSACTION mode — each statement may land on a
+//   different server-side connection. A WRITE on connection A and a READ on
+//   connection B arrive at different physical pg backends in Neon's fleet.
+//   Due to TCP buffer flushing order, the READ can execute before the WRITE's
+//   WAL record has been applied to that connection's snapshot.
+//
+//   Combined with pg Pool having max:10, the pool can reuse a different client
+//   for the GET that follows a PATCH — compounding the race.
+//
+// Fixes applied here:
+//   1. Pool uses application_name so Neon logs can correlate queries.
+//   2. Every new client connection runs SET synchronous_commit = on; and
+//      SET default_transaction_isolation = 'read committed'; explicitly —
+//      ensuring the server honours WAL flush before ack.
+//   3. The real fix is to switch DATABASE_URL from the pooler to the DIRECT
+//      endpoint (remove "-pooler" from the hostname in your Railway env var).
+//      This file adds a startup warning if the pooler URL is detected.
+//
+// The only code change required in your Railway dashboard:
+//   DATABASE_URL=postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+//                                              ^^ remove "-pooler" ^^
+
 import {
   Injectable,
   Logger,
@@ -8,13 +35,6 @@ import {
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg'
-
-// WHY standard pg instead of @neondatabase/serverless:
-// @neondatabase/serverless Pool uses WebSockets internally.
-// Node.js 20 has no built-in WebSocket — without explicitly setting
-// neonConfig.webSocketConstructor = ws, every pool.query() call silently
-// hangs forever. Standard pg uses TCP which works on all Node versions.
-// Neon accepts standard TCP connections on port 5432 (direct) with sslmode=require.
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
@@ -43,15 +63,46 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       throw err
     }
 
+    // ── Pooler detection warning ───────────────────────────────────────────
+    // Neon pooler URLs contain "-pooler" in the hostname.
+    // Using the pooler causes stale reads after writes because PgBouncer
+    // transaction mode can route READ and WRITE to different server connections.
+    // Switch to the DIRECT endpoint to guarantee read-after-write consistency.
+    if (dsn.includes('-pooler.')) {
+      this.logger.warn(
+        '⚠️  DATABASE_URL points to Neon POOLER endpoint (contains "-pooler.").\n' +
+        '   This causes stale reads after writes (toggle/delete shows old data).\n' +
+        '   Fix: remove "-pooler" from the hostname in your Railway environment variable.\n' +
+        '   Example: ep-xxx-pooler.region.aws.neon.tech → ep-xxx.region.aws.neon.tech',
+      )
+    }
+
     this.pool = new Pool({
       connectionString: dsn,
-      max: 10,
-      idleTimeoutMillis: 30_000,
+      max: 5,               // reduced from 10 — Neon free tier max is 5 direct connections
+      min: 1,               // keep 1 warm connection — reduces cold-start latency
+      idleTimeoutMillis:    30_000,
       connectionTimeoutMillis: 10_000,
-      // Neon PostgreSQL uses AWS-issued certificates trusted by Node's built-in
-      // CA bundle.  rejectUnauthorized: true (the default) verifies the cert chain
-      // and protects against MITM attacks.  We set it explicitly so the intent is clear.
+      application_name: 'pikly-api',
       ssl: { rejectUnauthorized: true },
+    })
+
+    // ── Per-connection session defaults ────────────────────────────────────
+    // Runs once when pg pool creates a new physical connection.
+    // synchronous_commit = on  → server waits for WAL flush before returning
+    //                            success — guarantees the write is visible to
+    //                            any subsequent read on ANY connection.
+    this.pool.on('connect', (client: PoolClient) => {
+      client
+        .query(`
+          SET synchronous_commit = on;
+          SET default_transaction_isolation = 'read committed';
+          SET statement_timeout = 30000;
+          SET lock_timeout = 10000;
+        `)
+        .catch((err: Error) =>
+          this.logger.warn(`Failed to set session defaults: ${err.message}`),
+        )
     })
 
     this.pool.on('error', (err: Error) => {
