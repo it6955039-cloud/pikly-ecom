@@ -2,13 +2,17 @@
 //
 // Flow for a GET request:
 //   1. Build cache key from method + path + sorted query string
-//   2. Check Redis — return cached response if hit (sets X-Cache: HIT)
-//   3. On miss: forward to upstream NestJS API
-//   4. If upstream responds 2xx: store body in Redis with path-aware TTL
-//   5. Always set X-Cache: MISS on first serve
+//   2. Admin paths (/api/admin/*) → always bypass cache, forward directly
+//   3. Check Redis — return cached response if hit (sets X-Cache: HIT)
+//   4. On miss: forward to upstream NestJS API
+//   5. If upstream responds 2xx: store body in Redis with path-aware TTL
+//   6. Always set X-Cache: MISS on first serve
 //
 // Non-GET requests (POST, PATCH, DELETE) are always forwarded to upstream.
 // Mutation routes also trigger cache invalidation (pattern-based).
+//
+// Admin mutation rule: any write to /api/admin/<resource> invalidates the
+// corresponding public GET cache so the storefront sees fresh data immediately.
 package proxy
 
 import (
@@ -56,14 +60,12 @@ func New(upstreamURL string, store *cache.Store, log *zap.Logger) (*Handler, err
 	}, nil
 }
 
-// ── Cache key ────────────────────────────────────────────────────────────────
+// ── Cache key ─────────────────────────────────────────────────────────────────
 
-// cacheKey builds a stable, sorted key from method + path + query.
 func cacheKey(method, path, rawQuery string) string {
 	if rawQuery == "" {
 		return fmt.Sprintf("px:%s:%s", method, path)
 	}
-	// Sort query params for key stability (e.g. ?b=1&a=2 == ?a=2&b=1)
 	q, _ := url.ParseQuery(rawQuery)
 	keys := make([]string, 0, len(q))
 	for k := range q {
@@ -77,69 +79,137 @@ func cacheKey(method, path, rawQuery string) string {
 	return fmt.Sprintf("px:%s:%s:%s", method, path, strings.Join(parts, "&"))
 }
 
-// ── Invalidation rules ───────────────────────────────────────────────────────
-
-// invalidationPattern returns a Redis glob for routes that mutate products.
-func invalidationPattern(path string) string {
+// ── Invalidation rules ────────────────────────────────────────────────────────
+//
+// invalidationPatterns returns all Redis glob patterns to delete after a
+// successful mutation on the given path.
+//
+// KEY FIX: Admin mutations (/api/admin/products, /api/admin/banners, etc.)
+// must invalidate the corresponding PUBLIC cache keys, because the storefront
+// reads from /api/products, /api/banners, etc. — not the admin endpoints.
+//
+// Before this fix: admin writes had no matching case → no cache invalidation
+// → storefront served stale data until Redis TTL expired (up to 15 minutes).
+func invalidationPatterns(path string) []string {
 	switch {
+
+	// ── Public product mutations ─────────────────────────────────────────
 	case strings.HasPrefix(path, "/api/products"):
-		return "px:GET:/api/products*"
+		return []string{"px:GET:/api/products*"}
+
+	// ── Admin product mutations → invalidate public product cache ────────
+	// Covers: toggle, update, delete, create, bulk ops on products.
+	case strings.HasPrefix(path, "/api/admin/products"),
+		strings.HasPrefix(path, "/api/admin/bulk"):
+		return []string{
+			"px:GET:/api/products*",     // storefront list + search
+			"px:GET:/api/homepage*",     // homepage widgets may show products
+		}
+
+	// ── Admin banner mutations → invalidate public banner cache ─────────
+	case strings.HasPrefix(path, "/api/admin/banners"):
+		return []string{
+			"px:GET:/api/banners*",
+			"px:GET:/api/homepage*",
+		}
+
+	// ── Admin category mutations → invalidate public category cache ──────
+	case strings.HasPrefix(path, "/api/admin/categories"):
+		return []string{
+			"px:GET:/api/categories*",
+			"px:GET:/api/homepage*",
+		}
+
+	// ── Admin homepage widget mutations ──────────────────────────────────
+	case strings.HasPrefix(path, "/api/admin/homepage-widgets"):
+		return []string{
+			"px:GET:/api/homepage*",
+		}
+
+	// ── Admin coupon mutations ────────────────────────────────────────────
+	// Coupons are validated at checkout — not cached at proxy level,
+	// but clear the pattern as a safety net.
+	case strings.HasPrefix(path, "/api/admin/coupons"):
+		return []string{
+			"px:GET:/api/coupons*",
+		}
+
+	// ── Admin user mutations ──────────────────────────────────────────────
+	// User endpoints are personal data — never cached at proxy level
+	// (noCachePath covers /api/users/*). No public invalidation needed.
+	case strings.HasPrefix(path, "/api/admin/users"):
+		return nil
+
+	// ── Admin order mutations ─────────────────────────────────────────────
+	// Orders are per-user — never cached at proxy level. No invalidation.
+	case strings.HasPrefix(path, "/api/admin/orders"):
+		return nil
+
+	// ── Public homepage / category mutations ─────────────────────────────
 	case strings.HasPrefix(path, "/api/homepage"):
-		return "px:GET:/api/homepage*"
+		return []string{"px:GET:/api/homepage*"}
+
 	case strings.HasPrefix(path, "/api/categories"):
-		return "px:GET:/api/categories*"
-	// Cart and orders bypass cache entirely via noCachePath,
-	// but keep invalidation rules here as safety net.
+		return []string{"px:GET:/api/categories*"}
+
+	// ── Cart and orders (safety net — these bypass cache anyway) ─────────
 	case strings.HasPrefix(path, "/api/cart"):
-		return "px:GET:/api/cart*"
+		return []string{"px:GET:/api/cart*"}
+
 	case strings.HasPrefix(path, "/api/orders"):
-		return "px:GET:/api/orders*"
+		return []string{"px:GET:/api/orders*"}
+
 	default:
-		return ""
+		return nil
 	}
 }
 
-// ── Gin handler ──────────────────────────────────────────────────────────────
+// ── Gin handler ───────────────────────────────────────────────────────────────
 
-// Proxy returns the main Gin handler. Mount on "/*path" to catch everything.
 func (h *Handler) Proxy() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path  := c.Request.URL.Path
 		query := c.Request.URL.RawQuery
 
-		// ── Only cache safe read methods ─────────────────────────────────────
 		if c.Request.Method == http.MethodGet ||
 			c.Request.Method == http.MethodHead {
 			h.serveWithCache(c, path, query)
 			return
 		}
 
-		// ── Write path: forward + invalidate ─────────────────────────────────
+		// ── Write path: forward → invalidate on success ───────────────────
 		h.forward(c)
 
 		if c.Writer.Status() < 300 {
-			if pat := invalidationPattern(path); pat != "" {
+			for _, pat := range invalidationPatterns(path) {
 				n, err := h.store.Invalidate(c.Request.Context(), pat)
 				if err == nil {
 					h.log.Info("cache invalidated",
 						zap.String("pattern", pat),
-						zap.Int64("keys_deleted", n))
+						zap.Int64("keys_deleted", n),
+						zap.String("triggered_by", path),
+					)
+				} else {
+					h.log.Warn("cache invalidation failed",
+						zap.String("pattern", pat),
+						zap.Error(err),
+					)
 				}
 			}
 		}
 	}
 }
 
-// ── Read path ────────────────────────────────────────────────────────────────
+// ── Read path ─────────────────────────────────────────────────────────────────
 
 // noCachePath returns true for paths that must never be served from cache.
-// API documentation reflects live code and must always be fresh.
-// NestJS SwaggerModule exposes three doc URLs:
-//   /api/docs        → HTML page
-//   /api/docs-json   → OpenAPI JSON spec (fetched by Swagger UI in browser)
-//   /api/docs-yaml   → OpenAPI YAML spec
-// All three must bypass cache, otherwise the browser gets stale spec JSON
-// even after the API is redeployed with new routes.
+//
+// FIX: Added /api/admin/* — admin GETs must always be fresh from the DB.
+// Before this fix, admin list responses were cached in Redis; after a toggle
+// or delete the admin panel itself showed stale data until TTL expired.
+//
+// Also added /api/users/* — user-specific data (profile, orders, cart)
+// must never be cached at proxy level to prevent cross-user data leaks.
 func noCachePath(path string) bool {
 	return path == "/api/docs" ||
 		strings.HasPrefix(path, "/api/docs/") ||
@@ -147,14 +217,16 @@ func noCachePath(path string) bool {
 		path == "/api/docs-yaml" ||
 		path == "/health" ||
 		strings.HasPrefix(path, "/health") ||
-		// Cart and orders are user-specific — NEVER cache at proxy level.
-		// Caching here would serve User A cart data to User B (critical security bug).
+		// ── FIX: Admin endpoints must never be cached ────────────────────
+		// Admin GETs must reflect DB state instantly after mutations.
+		strings.HasPrefix(path, "/api/admin") ||
+		// ── User-specific data — security: never cache across users ──────
+		strings.HasPrefix(path, "/api/users") ||
 		strings.HasPrefix(path, "/api/cart") ||
 		strings.HasPrefix(path, "/api/orders")
 }
 
 func (h *Handler) serveWithCache(c *gin.Context, path, query string) {
-	// Bypass cache entirely for docs and health — always proxy through to upstream.
 	if noCachePath(path) {
 		h.forward(c)
 		return
@@ -163,7 +235,6 @@ func (h *Handler) serveWithCache(c *gin.Context, path, query string) {
 	key := cacheKey(c.Request.Method, path, query)
 
 	if hit := h.store.Get(c.Request.Context(), key); hit != nil {
-		// ── Cache HIT ─────────────────────────────────────────────────────
 		c.Set("cacheHit", true)
 		for k, v := range hit.Headers {
 			c.Header(k, v)
@@ -175,7 +246,6 @@ func (h *Handler) serveWithCache(c *gin.Context, path, query string) {
 		return
 	}
 
-	// ── Cache MISS — forward to upstream ─────────────────────────────────
 	resp, body, err := h.doUpstream(c)
 	if err != nil {
 		h.log.Error("upstream request failed", zap.String("path", path), zap.Error(err))
@@ -184,7 +254,6 @@ func (h *Handler) serveWithCache(c *gin.Context, path, query string) {
 	}
 	defer resp.Body.Close()
 
-	// Collect headers to cache (skip hop-by-hop)
 	cachedHeaders := map[string]string{}
 	for _, name := range []string{
 		"Content-Type", "Content-Language", "Cache-Control",
@@ -195,18 +264,18 @@ func (h *Handler) serveWithCache(c *gin.Context, path, query string) {
 		}
 	}
 
-	// Only cache successful responses
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		ttl := h.store.TTLFor(path)
-		h.store.Set(c.Request.Context(), key, &cache.CachedResponse{
-			Status:   resp.StatusCode,
-			Headers:  cachedHeaders,
-			Body:     body,
-			CachedAt: time.Now().UnixMilli(),
-		}, ttl)
+		if ttl > 0 {
+			h.store.Set(c.Request.Context(), key, &cache.CachedResponse{
+				Status:   resp.StatusCode,
+				Headers:  cachedHeaders,
+				Body:     body,
+				CachedAt: time.Now().UnixMilli(),
+			}, ttl)
+		}
 	}
 
-	// Write response to client
 	c.Set("cacheHit", false)
 	for k, v := range cachedHeaders {
 		c.Header(k, v)
@@ -215,11 +284,11 @@ func (h *Handler) serveWithCache(c *gin.Context, path, query string) {
 	c.Data(resp.StatusCode, cachedHeaders["Content-Type"], body)
 }
 
-// ── Upstream call ────────────────────────────────────────────────────────────
+// ── Upstream call ─────────────────────────────────────────────────────────────
 
 func (h *Handler) doUpstream(c *gin.Context) (*http.Response, []byte, error) {
 	targetURL := *h.upstream
-	targetURL.Path    = c.Request.URL.Path
+	targetURL.Path     = c.Request.URL.Path
 	targetURL.RawQuery = c.Request.URL.RawQuery
 
 	req, err := http.NewRequestWithContext(
@@ -232,7 +301,6 @@ func (h *Handler) doUpstream(c *gin.Context) (*http.Response, []byte, error) {
 		return nil, nil, err
 	}
 
-	// Forward safe headers
 	for _, h2 := range []string{
 		"Authorization", "Accept", "Accept-Language",
 		"Content-Type", "X-Request-ID",
@@ -249,12 +317,11 @@ func (h *Handler) doUpstream(c *gin.Context) (*http.Response, []byte, error) {
 		return nil, nil, err
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // 8 MB cap
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return resp, body, err
 }
 
-// forward proxies a request without caching (used for write methods).
 func (h *Handler) forward(c *gin.Context) {
 	resp, body, err := h.doUpstream(c)
 	if err != nil {

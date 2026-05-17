@@ -1,9 +1,9 @@
-// src/admin/admin.module.ts  ← REPLACE
+// src/admin/admin.module.ts
 //
-// CHANGES vs v2 original:
-//   1. Added AdminHomepageWidgetsController (new in v2)
-//   2. Added IdentityModule — provides RequireRoleGuard, JitProvisioningGuard,
-//      @RequireRole for all admin controllers
+// DatabaseModule is @Global (registered in AppModule) — DatabaseService can be
+// injected into any controller/service without importing DatabaseModule here.
+// AdminCategoriesController and AdminProductsController both inject DatabaseService
+// for direct DB queries (bypass stale in-memory arrays for admin operations).
 
 import { Module }                          from '@nestjs/common'
 import { AdminOrdersController }           from './admin-orders.controller'
@@ -27,7 +27,8 @@ import { IdentityModule }                  from '../identity/identity.module'
     CategoriesModule,
     HomepageModule,
     WebhookModule,
-    IdentityModule,   // ← provides RequireRoleGuard, JitProvisioningGuard, @RequireRole
+    IdentityModule,   // provides RequireRoleGuard, JitProvisioningGuard, @RequireRole
+    // DatabaseModule is NOT listed here — it is @Global() and available everywhere.
   ],
   controllers: [
     AdminOrdersController,
@@ -38,7 +39,7 @@ import { IdentityModule }                  from '../identity/identity.module'
     AdminCategoriesController,
     AdminAnalyticsController,
     AdminBulkController,
-    AdminHomepageWidgetsController,   // ← new in v2
+    AdminHomepageWidgetsController,
   ],
 })
 export class AdminModule {}

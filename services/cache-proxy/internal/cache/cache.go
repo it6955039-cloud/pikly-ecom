@@ -1,8 +1,4 @@
 // internal/cache/cache.go — Redis-backed response cache with circuit breaker.
-//
-// Pattern: read-through cache that sits in front of the NestJS API.
-// Circuit breaker prevents Redis failures from cascading into API downtime —
-// on open circuit the proxy passes requests through with no caching.
 package cache
 
 import (
@@ -17,13 +13,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// Config holds cache and circuit-breaker tuning parameters.
 type Config struct {
-	DefaultTTL  time.Duration // generic routes
-	ProductTTL  time.Duration // GET /api/products/:slug — changes rarely
-	ListTTL     time.Duration // GET /api/products?*     — more volatile
-	MaxFailures int32         // consecutive Redis errors to open circuit
-	ResetAfter  time.Duration // time before half-open probe
+	DefaultTTL  time.Duration
+	ProductTTL  time.Duration
+	ListTTL     time.Duration
+	MaxFailures int32
+	ResetAfter  time.Duration
 }
 
 func DefaultConfig() Config {
@@ -36,24 +31,22 @@ func DefaultConfig() Config {
 	}
 }
 
-// CachedResponse is the envelope stored in Redis.
 type CachedResponse struct {
-	Status  int               `json:"s"`
-	Headers map[string]string `json:"h"`
-	Body    []byte            `json:"b"`
-	CachedAt int64            `json:"t"` // unix millis — for Age header
+	Status   int               `json:"s"`
+	Headers  map[string]string `json:"h"`
+	Body     []byte            `json:"b"`
+	CachedAt int64             `json:"t"`
 }
 
-func (r *CachedResponse) MarshalBinary() ([]byte, error)    { return json.Marshal(r) }
+func (r *CachedResponse) MarshalBinary() ([]byte, error) { return json.Marshal(r) }
 func (r *CachedResponse) UnmarshalBinary(d []byte) error { return json.Unmarshal(d, r) }
 
-// Store is the thread-safe cache backed by Redis.
 type Store struct {
 	rdb      *redis.Client
 	cfg      Config
 	log      *zap.Logger
 	failures atomic.Int32
-	openedAt atomic.Int64 // unix-nano when circuit opened; 0 = closed
+	openedAt atomic.Int64
 }
 
 func New(addr, password string, db int, cfg Config, log *zap.Logger) *Store {
@@ -73,14 +66,13 @@ func New(addr, password string, db int, cfg Config, log *zap.Logger) *Store {
 
 func (s *Store) Ping(ctx context.Context) error { return s.rdb.Ping(ctx).Err() }
 
-// ── Circuit breaker ─────────────────────────────────────────────────────────
+// ── Circuit breaker ──────────────────────────────────────────────────────────
 
 func (s *Store) circuitOpen() bool {
 	opened := s.openedAt.Load()
 	if opened == 0 {
 		return false
 	}
-	// Half-open after ResetAfter — allow one probe to close circuit
 	return time.Since(time.Unix(0, opened)) <= s.cfg.ResetAfter
 }
 
@@ -100,8 +92,6 @@ func (s *Store) onFailure() {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-// Get returns a cached response or nil on miss / open circuit.
-// Never returns an error — always degrades gracefully.
 func (s *Store) Get(ctx context.Context, key string) *CachedResponse {
 	if s.circuitOpen() {
 		return nil
@@ -123,7 +113,6 @@ func (s *Store) Get(ctx context.Context, key string) *CachedResponse {
 	return &resp
 }
 
-// Set stores a response. Silently swallows errors — never blocks request path.
 func (s *Store) Set(ctx context.Context, key string, resp *CachedResponse, ttl time.Duration) {
 	if s.circuitOpen() {
 		return
@@ -140,23 +129,56 @@ func (s *Store) Set(ctx context.Context, key string, resp *CachedResponse, ttl t
 	s.onSuccess()
 }
 
-// Invalidate deletes all keys matching a Redis KEYS pattern.
+// Invalidate deletes all keys matching a Redis glob pattern.
+//
+// FIX: Uses SCAN instead of KEYS — KEYS blocks Redis on large keyspaces
+// and is banned/rate-limited on Upstash. SCAN is non-blocking and safe
+// for production use.
 func (s *Store) Invalidate(ctx context.Context, pattern string) (int64, error) {
-	keys, err := s.rdb.Keys(ctx, pattern).Result()
-	if err != nil || len(keys) == 0 {
-		return 0, err
+	if s.circuitOpen() {
+		return 0, nil
 	}
-	return s.rdb.Del(ctx, keys...).Result()
+
+	var cursor uint64
+	var deleted int64
+
+	for {
+		keys, next, err := s.rdb.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			s.onFailure()
+			return deleted, err
+		}
+		if len(keys) > 0 {
+			n, err2 := s.rdb.Del(ctx, keys...).Result()
+			if err2 != nil {
+				s.onFailure()
+				return deleted, err2
+			}
+			deleted += n
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+
+	s.onSuccess()
+	return deleted, nil
 }
 
 // TTLFor returns the appropriate TTL for a given request path.
+// Admin routes are never cached — this is a safeguard in case
+// noCachePath somehow misses an admin GET.
 func (s *Store) TTLFor(path string) time.Duration {
+	// Admin routes should never reach here (noCachePath blocks them),
+	// but if they do — zero TTL means effectively no caching.
+	if len(path) >= 10 && path[:10] == "/api/admin" {
+		return 0
+	}
 	switch {
 	case len(path) > 14 && path[:14] == "/api/products/":
-		// Individual product detail — cached long
 		return s.cfg.ProductTTL
 	case path == "/api/products" || (len(path) > 13 && path[:13] == "/api/products"):
-		// Search / list results — shorter TTL
 		return s.cfg.ListTTL
 	default:
 		return s.cfg.DefaultTTL
