@@ -41,6 +41,7 @@ import {
 } from '../schemas/identity.schemas'
 import { IdentityMappingService } from '../gim/identity-mapping.service'
 import { OutboxService } from '../outbox/outbox.service'
+import { CacheService } from '../../common/cache.service'
 
 const SVIX_ID_HEADER = 'webhook-id'
 const SVIX_TIMESTAMP_HEADER = 'webhook-timestamp'
@@ -58,6 +59,7 @@ export class ClerkWebhookController {
     private readonly identityService: IIdentityService,
     private readonly gim: IdentityMappingService,
     private readonly outbox: OutboxService,
+    private readonly cache: CacheService,
   ) {}
 
   @Post()
@@ -143,6 +145,12 @@ export class ClerkWebhookController {
     })
 
     this.logger.log(`[ClerkWebhook] Provisioned user: ${user.id} (${email})`)
+
+    // Immediate cache invalidation — do not rely on TTL expiry for a newly
+    // provisioned user to become visible/permissioned across the app.
+    this.cache.delByPrefix('user:')
+    this.cache.delByPrefix('identity:')
+    this.logger.log(`[ClerkWebhook] Cache invalidated for new user: ${user.id}`)
   }
 
   private async handleUserUpdated(data: Record<string, unknown>): Promise<void> {
@@ -174,6 +182,11 @@ export class ClerkWebhookController {
     })
 
     this.logger.log(`[ClerkWebhook] Updated user: ${user.id} → ${internalId}`)
+
+    // Immediate cache invalidation — clear all cached data for this user so
+    // updated identity/profile/role data is reflected without waiting on TTL.
+    this.cache.delByExternalId(user.id)
+    this.logger.log(`[ClerkWebhook] Cache invalidated for updated user: ${user.id}`)
   }
 
   private async handleSessionEnded(data: Record<string, unknown>): Promise<void> {
@@ -194,6 +207,11 @@ export class ClerkWebhookController {
     await this.gim.deactivateMapping(externalId)
 
     this.logger.log(`[ClerkWebhook] Deactivated all mappings for: ${externalId}`)
+
+    // Immediate cache invalidation — a deactivated user must not remain
+    // accessible via stale cached data.
+    this.cache.delByPrefix('user:')
+    this.logger.log(`[ClerkWebhook] Cache invalidated for deleted user: ${externalId}`)
   }
 
   // ── Svix Signature Verification ────────────────────────────────────────────

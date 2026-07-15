@@ -13,12 +13,12 @@ import NodeCache from 'node-cache'
 import { RedisService, REDIS_TTL } from '../redis/redis.service'
 
 export const TTL = {
-  HOMEPAGE: 300,
-  STOREFRONT: 300,
-  PRODUCTS: 60,
-  CATEGORIES: 600,
+  HOMEPAGE: 60,
+  STOREFRONT: 60,
+  PRODUCTS: 30,
+  CATEGORIES: 120,
   BANNERS: 600,
-  DEFAULT: 120,
+  DEFAULT: 30,
 } as const
 
 const L2_TTL_MAP: Record<string, number> = {
@@ -77,10 +77,12 @@ export class CacheService {
   del(key: string): void {
     this.l1.del(key)
     this.redis.del(key).catch(() => void 0)
+    this.logger.log(`Cache invalidated: "${key}"`)
   }
 
   flush(): void {
     this.l1.flushAll()
+    this.logger.log('Cache invalidated: full flush')
   }
 
   delByPrefix(prefix: string): void {
@@ -89,6 +91,21 @@ export class CacheService {
       .filter((k) => k.startsWith(prefix))
       .forEach((k) => this.l1.del(k))
     this.redis.delPattern(`${prefix}*`).catch(() => void 0)
+    this.logger.log(`Cache invalidated: prefix "${prefix}"`)
+  }
+
+  /**
+   * Clears every cache entry that could hold data for a specific user,
+   * identified by their external (Clerk) id. Used by webhook handlers to
+   * guarantee immediate consistency after a user.updated event — no TTL
+   * window is relied upon here.
+   */
+  delByExternalId(externalId: string): void {
+    const prefixes = ['user:', 'identity:', 'storefront', 'products']
+    for (const prefix of prefixes) {
+      this.delByPrefix(prefix)
+    }
+    this.logger.log(`Cache invalidated for externalId "${externalId}"`)
   }
 
   keys(): string[] {
